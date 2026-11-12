@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">M Focus</string>
+    <string name="a11y_desc">Detects which app is open during a focus session so that apps you did not allow can be closed. It does not read screen content.</string>
+</resources>
