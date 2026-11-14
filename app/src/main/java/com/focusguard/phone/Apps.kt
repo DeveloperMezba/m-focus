@@ -33,12 +33,17 @@ object Apps {
         "com.tencent.mm", "jp.naver.line.android", "com.skype.raider",
     )
 
-    /** System parts that must never be blocked (notification shade, call screens, dialogs). */
-    private val SYSTEM_ALWAYS = setOf(
-        "android", "com.android.systemui", "com.android.incallui",
-        "com.android.server.telecom", "com.android.phone", "com.android.dialer",
-        "com.google.android.dialer", "com.samsung.android.incallui",
-        "com.samsung.android.dialer",
+    /** Notification shade, keyboard, permission dialogs: they never change the lock state. */
+    private val BASE_IGNORED = setOf(
+        "android", "com.android.systemui",
+        "com.google.android.permissioncontroller", "com.android.permissioncontroller",
+    )
+
+    /** Call screens: allowed while a session runs. */
+    private val CALL_PKGS = setOf(
+        "com.android.incallui", "com.android.server.telecom", "com.android.phone",
+        "com.android.dialer", "com.google.android.dialer",
+        "com.samsung.android.incallui", "com.samsung.android.dialer",
     )
 
     private fun prefs(c: Context) = c.getSharedPreferences("fg", Context.MODE_PRIVATE)
@@ -71,8 +76,11 @@ object Apps {
             c.getSystemService(InputMethodManager::class.java).enabledInputMethodList.map { it.packageName }.toSet()
         }.getOrDefault(emptySet())
 
-    fun allowedPackages(c: Context): Set<String> =
-        (SYSTEM_ALWAYS + c.packageName + dialerPackages(c) + imePackages(c) + AI_PRESETS + effectiveExtras(c)) - BLOCKED
+    fun ignoredPackages(c: Context): Set<String> = BASE_IGNORED + imePackages(c)
+
+    /** Apps that may be open during a session (this app is deliberately NOT in the list). */
+    fun allowedApps(c: Context): Set<String> =
+        (CALL_PKGS + dialerPackages(c) + AI_PRESETS + effectiveExtras(c)) - BLOCKED
 
     /** Apps shown on the lock screen: Phone + installed AI apps + extras. */
     fun launchItems(c: Context): List<AppItem> {

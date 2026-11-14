@@ -45,8 +45,8 @@ class MainActivity : ComponentActivity() {
             FocusTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Home(refresh) {
-                        startActivity(Intent(this, LockActivity::class.java))
-                        finish()
+                        GuardService.instance?.onSessionStarted()
+                        finishAndRemoveTask()
                     }
                 }
             }
@@ -56,8 +56,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (Session.isActive(this)) {
-            startActivity(Intent(this, LockActivity::class.java))
-            finish()
+            GuardService.instance?.onSessionStarted()
+            finishAndRemoveTask()
         }
         refresh++
     }

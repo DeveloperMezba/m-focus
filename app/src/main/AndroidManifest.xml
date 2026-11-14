@@ -33,14 +33,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".LockActivity"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:excludeFromRecents="true"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true" />
-
         <service
             android:name=".GuardService"
             android:exported="true"
