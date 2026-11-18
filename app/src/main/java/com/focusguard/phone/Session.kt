@@ -29,4 +29,13 @@ object Session {
     }
 
     fun todayMinutes(c: Context): Int = p(c).getInt("done_" + LocalDate.now(), 0)
+
+    /** Last few packages that triggered the lock screen (shown small on the home screen, for debugging). */
+    fun logBlocked(c: Context, pkg: String) {
+        val cur = blockedLog(c).filter { it != pkg }
+        p(c).edit().putString("blocked_log", (listOf(pkg) + cur).take(5).joinToString(",")).apply()
+    }
+
+    fun blockedLog(c: Context): List<String> =
+        (p(c).getString("blocked_log", "") ?: "").split(",").filter { it.isNotBlank() }
 }

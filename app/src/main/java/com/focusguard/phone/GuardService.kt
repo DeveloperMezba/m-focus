@@ -46,7 +46,7 @@ class GuardService : AccessibilityService() {
 
     override fun onServiceConnected() {
         chip = TimerChip(this)
-        blocker = BlockerOverlay(this) { graceUntil = SystemClock.uptimeMillis() + 6000 }
+        blocker = BlockerOverlay(this) { graceUntil = SystemClock.uptimeMillis() + 8000 }
         instance = this
         ContextCompat.registerReceiver(
             this, screenOn, IntentFilter(Intent.ACTION_SCREEN_ON), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -98,12 +98,17 @@ class GuardService : AccessibilityService() {
         // Notification shade, keyboard, permission dialogs: keep the current state.
         if (pkg in Apps.ignoredPackages(this)) return
         val now = SystemClock.uptimeMillis()
+        val inGrace = now < graceUntil          // just tapped an app on the lock screen
+        val isLauncher = pkg in Apps.launcherPackages(this)
         when {
             pkg in Apps.allowedApps(this) || pkg in tempAllowed -> showChip()
-            pkg in Apps.launcherPackages(this) -> { tempAllowed.clear(); showBlocker() }
+            // While the tapped app is starting, the launcher / this app may still report events: ignore them,
+            // otherwise the lock screen would cover the app that is opening.
+            inGrace && (isLauncher || pkg == packageName) -> {}
+            isLauncher -> { tempAllowed.clear(); showBlocker() }
             // Some apps (e.g. Gemini) start through a helper package: trust it briefly after a tap.
-            now < graceUntil && pkg !in Apps.BLOCKED && pkg != packageName -> { tempAllowed += pkg; showChip() }
-            else -> showBlocker()
+            inGrace && pkg !in Apps.BLOCKED -> { tempAllowed += pkg; showChip() }
+            else -> { Session.logBlocked(this, pkg); showBlocker() }
         }
     }
 

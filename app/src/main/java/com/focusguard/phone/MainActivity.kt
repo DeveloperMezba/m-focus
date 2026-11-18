@@ -99,19 +99,19 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
 
         if (!a11y) SetupRow(
             "1. Turn on accessibility",
-            "Lets M Focus see which app is open so it can close blocked apps. It does not read your screen.",
+            "Needed to close blocked apps.",
             "Open settings",
         ) { ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
 
         if (!notif) SetupRow(
             "2. Allow notification access",
-            "Lets M Focus hide WhatsApp, Messenger, Facebook, Instagram and other social notifications during a session.",
+            "Needed to hide social notifications.",
             "Open settings",
         ) { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
 
         if (!battery) SetupRow(
             "3. Disable battery optimization",
-            "Stops Android from putting M Focus to sleep during a session.",
+            "Keeps M Focus running.",
             "Allow",
         ) {
             ctx.startActivity(
@@ -130,11 +130,13 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             shape = RoundedCornerShape(24.dp)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Always allowed", fontWeight = FontWeight.Medium)
-                Text("Phone calls and AI apps (Gemini, ChatGPT, Claude and more). Social media, messengers and browsers can never be added.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Extra apps: $extras", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton({ showPicker = true }) { Text("Choose extra apps") }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Always allowed", fontWeight = FontWeight.Medium)
+                        if (extras > 0) Text("$extras chosen", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    FilledTonalButton({ showPicker = true }) { Text("Choose apps") }
+                }
             }
         }
 
@@ -143,13 +145,19 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
             enabled = ready,
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) { Text(if (ready) "Start focus session" else "Finish setup first", fontSize = 16.sp) }
+
+        val lastBlocked = remember(refresh) { Session.blockedLog(ctx) }
+        if (lastBlocked.isNotEmpty()) Text(
+            "Last blocked: " + lastBlocked.joinToString(", "),
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 
     if (showPicker) AppPicker { showPicker = false }
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("Start $minutes minutes?") },
-        text = { Text("Only calls and allowed apps will work. You cannot stop the session early.") },
+        text = { Text("You can't stop it early.") },
         confirmButton = {
             TextButton({ confirm = false; Session.start(ctx, minutes); NotificationBlocker.instance?.sweep(); onStarted() }) { Text("Start") }
         },
@@ -249,7 +257,7 @@ fun AppPicker(onClose: () -> Unit) {
     var sel by remember { mutableStateOf(Apps.effectiveExtras(ctx)) }
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Extra allowed apps") },
+        title = { Text("Choose apps") },
         text = {
             LazyColumn(Modifier.heightIn(max = 380.dp)) {
                 items(apps) { (pkg, label) ->
