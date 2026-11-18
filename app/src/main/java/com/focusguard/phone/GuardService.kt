@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 
@@ -21,6 +22,8 @@ class GuardService : AccessibilityService() {
     private lateinit var blocker: BlockerOverlay
     private val handler = Handler(Looper.getMainLooper())
     private var ticking = false
+    private var graceUntil = 0L                     // short window after tapping an app in the lock screen
+    private val tempAllowed = mutableSetOf<String>() // helper packages of an app that was just launched
 
     private val tick = object : Runnable {
         override fun run() {
@@ -43,7 +46,7 @@ class GuardService : AccessibilityService() {
 
     override fun onServiceConnected() {
         chip = TimerChip(this)
-        blocker = BlockerOverlay(this)
+        blocker = BlockerOverlay(this) { graceUntil = SystemClock.uptimeMillis() + 6000 }
         instance = this
         ContextCompat.registerReceiver(
             this, screenOn, IntentFilter(Intent.ACTION_SCREEN_ON), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -73,11 +76,13 @@ class GuardService : AccessibilityService() {
     }
 
     private fun endSession() {
-        Session.complete(this)
+        val finished = Session.complete(this)
         ticking = false
+        tempAllowed.clear()
         handler.removeCallbacks(tick)
         chip.hide()
         blocker.hide()
+        if (finished) Chime.play()
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
@@ -92,7 +97,14 @@ class GuardService : AccessibilityService() {
         if (pkg == packageName && !cls.startsWith(packageName)) return
         // Notification shade, keyboard, permission dialogs: keep the current state.
         if (pkg in Apps.ignoredPackages(this)) return
-        if (pkg in Apps.allowedApps(this)) showChip() else showBlocker()
+        val now = SystemClock.uptimeMillis()
+        when {
+            pkg in Apps.allowedApps(this) || pkg in tempAllowed -> showChip()
+            pkg in Apps.launcherPackages(this) -> { tempAllowed.clear(); showBlocker() }
+            // Some apps (e.g. Gemini) start through a helper package: trust it briefly after a tap.
+            now < graceUntil && pkg !in Apps.BLOCKED && pkg != packageName -> { tempAllowed += pkg; showChip() }
+            else -> showBlocker()
+        }
     }
 
     override fun onInterrupt() {}

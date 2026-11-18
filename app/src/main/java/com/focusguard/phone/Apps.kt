@@ -37,6 +37,7 @@ object Apps {
     private val BASE_IGNORED = setOf(
         "android", "com.android.systemui",
         "com.google.android.permissioncontroller", "com.android.permissioncontroller",
+        "com.google.android.gms",
     )
 
     /** Call screens: allowed while a session runs. */
@@ -75,6 +76,13 @@ object Apps {
         runCatching {
             c.getSystemService(InputMethodManager::class.java).enabledInputMethodList.map { it.packageName }.toSet()
         }.getOrDefault(emptySet())
+
+    /** Home screen / recents apps. Going there ends any temporary permission. */
+    fun launcherPackages(c: Context): Set<String> = runCatching {
+        c.packageManager.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
+        ).map { it.activityInfo.packageName }.toSet()
+    }.getOrDefault(emptySet())
 
     fun ignoredPackages(c: Context): Set<String> = BASE_IGNORED + imePackages(c)
 

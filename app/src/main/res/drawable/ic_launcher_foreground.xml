@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- track -->
+    <path
+        android:pathData="M54,30 A24,24 0 1,1 53.99,30"
+        android:strokeColor="#262D36"
+        android:strokeWidth="9"
+        android:fillColor="#00000000" />
+    <!-- progress arc (270 degrees) -->
+    <path
+        android:pathData="M54,30 A24,24 0 1,1 30,54"
+        android:strokeColor="#7FD1C4"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- handle -->
+    <path
+        android:pathData="M30,48.5 A5.5,5.5 0 1,0 30.01,48.5"
+        android:fillColor="#7FD1C4" />
+</vector>

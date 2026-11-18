@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -38,20 +39,26 @@ fun formatTime(ms: Long): String {
     else "%02d:%02d".format(s / 60, s % 60)
 }
 
-/** Small always-on-top countdown pill. Shown only while an ALLOWED app (Phone, AI...) is open. */
+/**
+ * Small countdown pill, shown only while an ALLOWED app (Phone, AI...) is open.
+ * Sits in the status-bar area by default and can be dragged anywhere; the position is remembered.
+ */
 class TimerChip(private val svc: AccessibilityService) {
     private val wm = svc.getSystemService(WindowManager::class.java)
+    private val prefs = svc.getSharedPreferences("fg", Context.MODE_PRIVATE)
     private var view: TextView? = null
 
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     fun show() {
         if (view != null) return
         val tv = TextView(svc).apply {
             setTextColor(Color.parseColor("#00382F"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTypeface(typeface, Typeface.BOLD)
-            setPadding(svc.dp(14), svc.dp(6), svc.dp(14), svc.dp(6))
+            setPadding(svc.dp(10), svc.dp(3), svc.dp(10), svc.dp(3))
+            alpha = 0.92f
             background = GradientDrawable().apply {
-                cornerRadius = svc.dp(20).toFloat()
+                cornerRadius = svc.dp(16).toFloat()
                 setColor(Color.parseColor("#7FD1C4"))
             }
         }
@@ -59,11 +66,33 @@ class TimerChip(private val svc: AccessibilityService) {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = svc.statusBarHeight() + svc.dp(4)
+            x = prefs.getInt("chip_x", 0)
+            y = prefs.getInt("chip_y", svc.dp(2))
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        tv.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y }
+                MotionEvent.ACTION_MOVE -> {
+                    lp.x = startX + (e.rawX - downX).toInt()
+                    lp.y = startY + (e.rawY - downY).toInt()
+                    runCatching { wm.updateViewLayout(tv, lp) }
+                }
+                MotionEvent.ACTION_UP -> prefs.edit().putInt("chip_x", lp.x).putInt("chip_y", lp.y).apply()
+            }
+            true
         }
         runCatching { wm.addView(tv, lp) }.onSuccess {
             view = tv
@@ -121,7 +150,7 @@ class RingView(ctx: Context) : View(ctx) {
  * recents and every non-allowed app, so there is nothing to tap or swipe away.
  * Shows clock on top, countdown in the middle, allowed apps at the bottom.
  */
-class BlockerOverlay(private val svc: AccessibilityService) {
+class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch: () -> Unit) {
     private val wm = svc.getSystemService(WindowManager::class.java)
     private var root: FrameLayout? = null
     private var clock: TextView? = null
@@ -138,15 +167,13 @@ class BlockerOverlay(private val svc: AccessibilityService) {
 
     private fun appView(item: AppItem): View = LinearLayout(svc).apply {
         orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_HORIZONTAL
-        addView(ImageView(svc).apply { setImageDrawable(item.icon) }, LinearLayout.LayoutParams(svc.dp(52), svc.dp(52)))
-        addView(label(item.label, 12f, "#E1E3E8").apply {
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        })
+        gravity = Gravity.CENTER
+        contentDescription = item.label
+        addView(ImageView(svc).apply { setImageDrawable(item.icon) }, LinearLayout.LayoutParams(svc.dp(44), svc.dp(44)))
         // The overlay is visible while this runs, so Android allows the launch.
         // The overlay hides itself when the allowed app's window appears.
         setOnClickListener {
+            onLaunch()
             runCatching { svc.startActivity(Intent(item.intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
     }
@@ -155,7 +182,7 @@ class BlockerOverlay(private val svc: AccessibilityService) {
         orientation = LinearLayout.HORIZONTAL
         setPadding(0, svc.dp(6), 0, svc.dp(6))
         items.forEach { addView(appView(it), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
-        repeat(4 - items.size) { addView(View(svc), LinearLayout.LayoutParams(0, 1, 1f)) }
+        repeat(5 - items.size) { addView(View(svc), LinearLayout.LayoutParams(0, 1, 1f)) }
     }
 
     fun show() {
@@ -165,19 +192,17 @@ class BlockerOverlay(private val svc: AccessibilityService) {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(svc.dp(24), svc.statusBarHeight() + svc.dp(24), svc.dp(24), svc.dp(36))
         }
-        clock = label("", 64f, "#E1E3E8", true)
+        clock = label("", 52f, "#E1E3E8", true)
         date = label("", 14f, "#8A929E")
         col.addView(clock)
         col.addView(date)
 
         val box = FrameLayout(svc)
-        val side = (svc.resources.displayMetrics.widthPixels * 0.72f).toInt()
-        ring = RingView(svc)
-        box.addView(ring, FrameLayout.LayoutParams(side, side, Gravity.CENTER))
+        ring = RingView(svc)   // draws a circle as large as the free space allows
+        box.addView(ring, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         col.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        col.addView(label("Allowed", 13f, "#8A929E").apply { setPadding(0, 0, 0, svc.dp(10)) })
-        Apps.launchItems(svc).chunked(4).forEach { col.addView(appRow(it)) }
+        Apps.launchItems(svc).chunked(5).forEach { col.addView(appRow(it)) }
 
         val frame = FrameLayout(svc).apply {
             setBackgroundColor(Color.parseColor("#0F1419"))

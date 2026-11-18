@@ -19,12 +19,13 @@ object Session {
             .putInt("minutes", minutes).apply()
     }
 
-    /** Call when the timer has run out. Safe to call more than once. */
-    fun complete(c: Context) {
+    /** Call when the timer has run out. Returns true only the first time it really completes. */
+    fun complete(c: Context): Boolean {
         val e = endAt(c)
-        if (e == 0L || e > System.currentTimeMillis()) return
+        if (e == 0L || e > System.currentTimeMillis()) return false
         val key = "done_" + LocalDate.now()
         p(c).edit().putInt(key, p(c).getInt(key, 0) + totalMin(c)).putLong("end", 0L).apply()
+        return true
     }
 
     fun todayMinutes(c: Context): Int = p(c).getInt("done_" + LocalDate.now(), 0)
