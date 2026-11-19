@@ -150,7 +150,7 @@ class RingView(ctx: Context) : View(ctx) {
  * recents and every non-allowed app, so there is nothing to tap or swipe away.
  * Shows clock on top, countdown in the middle, allowed apps at the bottom.
  */
-class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch: () -> Unit) {
+class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch: (String) -> Unit) {
     private val wm = svc.getSystemService(WindowManager::class.java)
     private var root: FrameLayout? = null
     private var clock: TextView? = null
@@ -173,7 +173,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         // The overlay is visible while this runs, so Android allows the launch.
         // The overlay hides itself when the allowed app's window appears.
         setOnClickListener {
-            onLaunch()
+            onLaunch(item.pkg)
             runCatching { svc.startActivity(Intent(item.intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
     }

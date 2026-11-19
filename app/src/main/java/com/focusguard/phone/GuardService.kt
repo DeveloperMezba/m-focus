@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -22,7 +23,7 @@ class GuardService : AccessibilityService() {
     private lateinit var blocker: BlockerOverlay
     private val handler = Handler(Looper.getMainLooper())
     private var ticking = false
-    private var graceUntil = 0L                     // short window after tapping an app in the lock screen
+    private var transitionUntil = 0L                // ~1s after tapping an app on the lock screen
     private val tempAllowed = mutableSetOf<String>() // helper packages of an app that was just launched
 
     private val tick = object : Runnable {
@@ -46,7 +47,11 @@ class GuardService : AccessibilityService() {
 
     override fun onServiceConnected() {
         chip = TimerChip(this)
-        blocker = BlockerOverlay(this) { graceUntil = SystemClock.uptimeMillis() + 8000 }
+        blocker = BlockerOverlay(this) { pkg ->
+            transitionUntil = SystemClock.uptimeMillis() + 800
+            tempAllowed.clear()
+            tempAllowed += Apps.HELPERS[pkg].orEmpty()
+        }
         instance = this
         ContextCompat.registerReceiver(
             this, screenOn, IntentFilter(Intent.ACTION_SCREEN_ON), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -85,6 +90,13 @@ class GuardService : AccessibilityService() {
         if (finished) Chime.play()
     }
 
+    /** The power / restart menu must not be usable during a session. */
+    private fun isPowerMenu(pkg: String, cls: String): Boolean {
+        if (!(pkg == "android" || pkg.contains("systemui") || pkg.contains("globalactions"))) return false
+        val c = cls.lowercase()
+        return listOf("globalactions", "powermenu", "poweroff", "shutdown", "rebootdialog", "restart").any { c.contains(it) }
+    }
+
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         if (!Session.isActive(this)) {
@@ -95,19 +107,23 @@ class GuardService : AccessibilityService() {
         val cls = e.className?.toString() ?: ""
         // Events raised by our own overlay windows are not real app switches.
         if (pkg == packageName && !cls.startsWith(packageName)) return
+        if (isPowerMenu(pkg, cls)) {
+            // Lock the screen (display off) so the menu disappears and Restart can't be tapped.
+            if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+            else performGlobalAction(GLOBAL_ACTION_HOME)
+            tempAllowed.clear()
+            showBlocker()
+            return
+        }
         // Notification shade, keyboard, permission dialogs: keep the current state.
         if (pkg in Apps.ignoredPackages(this)) return
-        val now = SystemClock.uptimeMillis()
-        val inGrace = now < graceUntil          // just tapped an app on the lock screen
         val isLauncher = pkg in Apps.launcherPackages(this)
         when {
             pkg in Apps.allowedApps(this) || pkg in tempAllowed -> showChip()
-            // While the tapped app is starting, the launcher / this app may still report events: ignore them,
-            // otherwise the lock screen would cover the app that is opening.
-            inGrace && (isLauncher || pkg == packageName) -> {}
+            // Right after a tap the launcher / this app may still report the old screen: ignore that for <1s.
+            SystemClock.uptimeMillis() < transitionUntil && (isLauncher || pkg == packageName) -> {}
+            // Home, recents, app drawer: always back to the lock screen.
             isLauncher -> { tempAllowed.clear(); showBlocker() }
-            // Some apps (e.g. Gemini) start through a helper package: trust it briefly after a tap.
-            inGrace && pkg !in Apps.BLOCKED -> { tempAllowed += pkg; showChip() }
             else -> { Session.logBlocked(this, pkg); showBlocker() }
         }
     }

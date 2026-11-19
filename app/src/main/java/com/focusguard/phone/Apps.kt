@@ -20,6 +20,11 @@ object Apps {
         "com.deepseek.chat",              // DeepSeek
     )
 
+    /** Apps that open their UI through another package: allowed only after tapping the app on the lock screen. */
+    val HELPERS = mapOf(
+        "com.google.android.apps.bard" to setOf("com.google.android.googlequicksearchbox", "com.google.android.gms"),
+    )
+
     /** Social media / messengers: no notifications during a session and can never be allowed. */
     val BLOCKED = setOf(
         "com.whatsapp", "com.whatsapp.w4b",

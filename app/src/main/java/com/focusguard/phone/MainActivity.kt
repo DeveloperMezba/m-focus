@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.delay
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -81,9 +82,12 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
     var minutes by remember { mutableIntStateOf(50) }
     var showPicker by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
-    val a11y = remember(refresh) { a11yEnabled(ctx) }
-    val battery = remember(refresh) { batteryOk(ctx) }
-    val notif = remember(refresh) { NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName) }
+    var tick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); tick++ } }   // notice permission changes while the app is open
+    // "Listed in settings" is not enough: the service must actually be connected.
+    val a11y = remember(refresh, tick) { a11yEnabled(ctx) && GuardService.instance != null }
+    val battery = remember(refresh, tick) { batteryOk(ctx) }
+    val notif = remember(refresh, tick) { NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName) }
     val extras = remember(refresh, showPicker) { Apps.effectiveExtras(ctx).size }
     val today = remember(refresh) { Session.todayMinutes(ctx) }
     val ready = a11y && notif && battery
@@ -99,7 +103,7 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
 
         if (!a11y) SetupRow(
             "1. Turn on accessibility",
-            "Needed to close blocked apps.",
+            if (a11yEnabled(ctx)) "It stopped. Turn it off and on again." else "Needed to close blocked apps.",
             "Open settings",
         ) { ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
 
