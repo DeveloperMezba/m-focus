@@ -1,7 +1,7 @@
 <resources>
     <style name="Theme.FocusGuard" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#0F1419</item>
-        <item name="android:statusBarColor">#0F1419</item>
-        <item name="android:navigationBarColor">#0F1419</item>
+        <item name="android:windowBackground">#1B1A21</item>
+        <item name="android:statusBarColor">#1B1A21</item>
+        <item name="android:navigationBarColor">#2E2A3B</item>
     </style>
 </resources>

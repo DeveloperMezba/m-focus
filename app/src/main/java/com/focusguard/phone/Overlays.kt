@@ -40,27 +40,29 @@ fun formatTime(ms: Long): String {
 }
 
 /**
- * Small countdown pill, shown only while an ALLOWED app (Phone, AI...) is open.
+ * Small countdown pill, shown while an ALLOWED app is open and during breaks.
  * Sits in the status-bar area by default and can be dragged anywhere; the position is remembered.
  */
 class TimerChip(private val svc: AccessibilityService) {
     private val wm = svc.getSystemService(WindowManager::class.java)
     private val prefs = svc.getSharedPreferences("fg", Context.MODE_PRIVATE)
     private var view: TextView? = null
+    private var bg: GradientDrawable? = null
 
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     fun show() {
         if (view != null) return
+        val shape = GradientDrawable().apply {
+            cornerRadius = svc.dp(16).toFloat()
+            setColor(Color.parseColor("#FFFFFF"))
+        }
         val tv = TextView(svc).apply {
-            setTextColor(Color.parseColor("#00382F"))
+            setTextColor(Color.parseColor("#2D1B69"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTypeface(typeface, Typeface.BOLD)
             setPadding(svc.dp(10), svc.dp(3), svc.dp(10), svc.dp(3))
             alpha = 0.92f
-            background = GradientDrawable().apply {
-                cornerRadius = svc.dp(16).toFloat()
-                setColor(Color.parseColor("#7FD1C4"))
-            }
+            background = shape
         }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -96,17 +98,21 @@ class TimerChip(private val svc: AccessibilityService) {
         }
         runCatching { wm.addView(tv, lp) }.onSuccess {
             view = tv
-            update(Session.remainingMs(svc))
+            bg = shape
+            update(formatTime(Session.remainingMs(svc)), false)
         }
     }
 
     fun hide() {
         view?.let { runCatching { wm.removeView(it) } }
         view = null
+        bg = null
     }
 
-    fun update(remMs: Long) {
-        view?.text = formatTime(remMs)
+    /** breakMode = green chip with "Break mm:ss". */
+    fun update(text: String, breakMode: Boolean) {
+        view?.text = text
+        bg?.setColor(Color.parseColor(if (breakMode) "#9BE8B8" else "#FFFFFF"))
     }
 }
 
@@ -114,18 +120,19 @@ class TimerChip(private val svc: AccessibilityService) {
 class RingView(ctx: Context) : View(ctx) {
     var fraction = 1f
     var main = ""
+    var extra = ""
     private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; color = Color.parseColor("#262D36")
+        style = Paint.Style.STROKE; color = Color.parseColor("#40FFFFFF")
     }
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; color = Color.parseColor("#7FD1C4")
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; color = Color.parseColor("#FFFFFF")
     }
     private val tMain = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E1E3E8"); textAlign = Paint.Align.CENTER
+        color = Color.parseColor("#FFFFFF"); textAlign = Paint.Align.CENTER
         typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
     }
     private val tSub = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8A929E"); textAlign = Paint.Align.CENTER
+        color = Color.parseColor("#B3FFFFFF"); textAlign = Paint.Align.CENTER
     }
 
     override fun onDraw(c: Canvas) {
@@ -142,6 +149,10 @@ class RingView(ctx: Context) : View(ctx) {
         c.drawText(main, cx, cy + s * 0.04f, tMain)
         tSub.textSize = s * 0.065f
         c.drawText("focus time left", cx, cy + s * 0.16f, tSub)
+        if (extra.isNotEmpty()) {
+            tSub.textSize = s * 0.058f
+            c.drawText(extra, cx, cy + s * 0.25f, tSub)
+        }
     }
 }
 
@@ -192,8 +203,8 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(svc.dp(24), svc.statusBarHeight() + svc.dp(24), svc.dp(24), svc.dp(36))
         }
-        clock = label("", 52f, "#E1E3E8", true)
-        date = label("", 14f, "#8A929E")
+        clock = label("", 52f, "#FFFFFF", true)
+        date = label("", 14f, "#B3FFFFFF")
         col.addView(clock)
         col.addView(date)
 
@@ -202,10 +213,23 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         box.addView(ring, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         col.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        Apps.launchItems(svc).chunked(5).forEach { col.addView(appRow(it)) }
+        // bottom "dock": a soft glass box holding Phone + the chosen apps
+        val dock = LinearLayout(svc).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(svc.dp(8), svc.dp(10), svc.dp(8), svc.dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = svc.dp(28).toFloat()
+                setColor(Color.parseColor("#26FFFFFF"))
+            }
+        }
+        Apps.launchItems(svc).chunked(5).forEach { dock.addView(appRow(it)) }
+        col.addView(dock, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         val frame = FrameLayout(svc).apply {
-            setBackgroundColor(Color.parseColor("#0F1419"))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#1B1A21"), Color.parseColor("#252330"), Color.parseColor("#2E2A3B")),
+            )
             addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         val lp = WindowManager.LayoutParams(
@@ -234,7 +258,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         ring = null
     }
 
-    fun update(remMs: Long) {
+    fun update(remMs: Long, breakInMs: Long = -1) {
         val now = Date()
         clock?.text = SimpleDateFormat("hh:mm", Locale.getDefault()).format(now)
         date?.text = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
@@ -242,6 +266,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         ring?.apply {
             fraction = remMs.toFloat() / total
             main = formatTime(remMs)
+            extra = if (breakInMs > 0) "break in " + formatTime(breakInMs) else ""
             invalidate()
         }
     }

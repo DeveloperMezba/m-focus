@@ -21,9 +21,14 @@ object Apps {
     )
 
     /** Apps that open their UI through another package: allowed only after tapping the app on the lock screen. */
-    val HELPERS = mapOf(
-        "com.google.android.apps.bard" to setOf("com.google.android.googlequicksearchbox", "com.google.android.gms"),
-    )
+    /** AI apps are not allowed during a session and can't be chosen as extras. */
+    val AI_ALL: Set<String> = AI_PRESETS.toSet() +
+        setOf("com.google.android.googlequicksearchbox", "com.google.android.apps.googleassistant")
+
+    const val MAX_EXTRAS = 4
+
+    /** Apps that open their UI through another package (none right now). */
+    val HELPERS: Map<String, Set<String>> = emptyMap()
 
     /** Social media / messengers: no notifications during a session and can never be allowed. */
     val BLOCKED = setOf(
@@ -55,7 +60,7 @@ object Apps {
     private fun prefs(c: Context) = c.getSharedPreferences("fg", Context.MODE_PRIVATE)
 
     fun getExtras(c: Context): Set<String> = prefs(c).getStringSet("extras", emptySet()) ?: emptySet()
-    fun setExtras(c: Context, s: Set<String>) = prefs(c).edit().putStringSet("extras", s.toSet()).apply()
+    fun setExtras(c: Context, s: Set<String>) = prefs(c).edit().putStringSet("extras", s.take(MAX_EXTRAS).toSet()).apply()
 
     /** Browsers can open social sites, so they can't be added as extras either. */
     fun browserPackages(c: Context): Set<String> = runCatching {
@@ -65,7 +70,8 @@ object Apps {
     }.getOrDefault(emptySet())
 
     /** Extras that are really allowed: social apps and browsers are always removed. */
-    fun effectiveExtras(c: Context): Set<String> = getExtras(c) - BLOCKED - browserPackages(c)
+    fun effectiveExtras(c: Context): Set<String> =
+        (getExtras(c) - BLOCKED - AI_ALL - browserPackages(c)).take(MAX_EXTRAS).toSet()
 
     private fun dialerPackages(c: Context): Set<String> {
         val out = mutableSetOf<String>()
@@ -93,9 +99,9 @@ object Apps {
 
     /** Apps that may be open during a session (this app is deliberately NOT in the list). */
     fun allowedApps(c: Context): Set<String> =
-        (CALL_PKGS + dialerPackages(c) + AI_PRESETS + effectiveExtras(c)) - BLOCKED
+        (CALL_PKGS + dialerPackages(c) + effectiveExtras(c)) - BLOCKED - AI_ALL
 
-    /** Apps shown on the lock screen: Phone + installed AI apps + extras. */
+    /** Apps shown on the lock screen: Phone + up to 4 extras. */
     fun launchItems(c: Context): List<AppItem> {
         val pm = c.packageManager
         val items = mutableListOf<AppItem>()
@@ -105,7 +111,7 @@ object Apps {
             dialer?.let { runCatching { pm.getApplicationIcon(it) }.getOrNull() },
             Intent(Intent.ACTION_DIAL).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
-        (AI_PRESETS + effectiveExtras(c)).distinct().forEach { pkg ->
+        effectiveExtras(c).forEach { pkg ->
             val intent = pm.getLaunchIntentForPackage(pkg) ?: return@forEach
             val label = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
             items += AppItem(pkg, label, runCatching { pm.getApplicationIcon(pkg) }.getOrNull(),

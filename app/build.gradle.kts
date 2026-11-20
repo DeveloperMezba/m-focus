@@ -10,8 +10,8 @@ android {
         applicationId = "com.focusguard.phone"
         minSdk = 27
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.5"
+        versionCode = 4
+        versionName = "2.5"
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {

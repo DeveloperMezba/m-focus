@@ -20,7 +20,7 @@ class NotificationBlocker : NotificationListenerService() {
     }
 
     private fun shouldBlock(sbn: StatusBarNotification): Boolean =
-        Session.isActive(this) && sbn.packageName in Apps.BLOCKED
+        Session.isActive(this) && !Session.phase(this).onBreak && sbn.packageName in Apps.BLOCKED
 
     /** Clears blocked notifications that arrived before the session started. */
     fun sweep() {
