@@ -55,6 +55,7 @@ class GuardService : AccessibilityService() {
             endSession()
             return
         }
+        if (rem <= 5000) Feedback.countdown(this)   // last 5 seconds: one buzz per second
         val ph = Session.phase(this)
         if (ph.onBreak != onBreak) {
             onBreak = ph.onBreak
@@ -177,7 +178,11 @@ class GuardService : AccessibilityService() {
             if (Session.endAt(this) > 0) endSession() else { chip.hide(); blocker.hide() }
             return
         }
-        if (onBreak) return                    // breaks are free time
+        if (onBreak) {                         // breaks are free time, but not for uninstalling / switching protection off
+            val p = e.packageName?.toString()
+            if (p != null && p in Apps.TAMPER_PACKAGES) performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
         val pkg = e.packageName?.toString() ?: return
         val cls = e.className?.toString() ?: ""
         // Events raised by our own overlay windows are not real app switches.

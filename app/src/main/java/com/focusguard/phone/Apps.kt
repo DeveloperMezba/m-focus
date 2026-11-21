@@ -30,6 +30,16 @@ object Apps {
     /** Apps that open their UI through another package (none right now). */
     val HELPERS: Map<String, Set<String>> = emptyMap()
 
+    /** Screens that can uninstall the app or switch its permissions off. Sent Home even during breaks. */
+    val TAMPER_PACKAGES = setOf(
+        "com.android.settings",
+        "com.android.packageinstaller", "com.google.android.packageinstaller",
+        "com.samsung.android.packageinstaller", "com.miui.packageinstaller",
+        "com.google.android.permissioncontroller", "com.android.permissioncontroller",
+        "com.android.vending",
+        "com.miui.securitycenter", "com.iqoo.secure", "com.coloros.safecenter", "com.transsion.phonemaster",
+    )
+
     /** Social media / messengers: no notifications during a session and can never be allowed. */
     val BLOCKED = setOf(
         "com.whatsapp", "com.whatsapp.w4b",

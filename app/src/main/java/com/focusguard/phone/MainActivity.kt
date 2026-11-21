@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
                     if (showSettings) {
                         SettingsScreen(theme, { theme = it; AppSettings.setTheme(this, it) }) { showSettings = false }
                     } else {
-                        Column(Modifier.fillMaxSize()) {
+                        Column(Modifier.fillMaxSize().statusBarsPadding()) {
                             Box(Modifier.weight(1f)) {
                                 if (tab == 0) {
                                     Home(home, refresh, { showSettings = true }) {
@@ -161,7 +161,7 @@ fun GearIcon(onClick: () -> Unit) {
 @Composable
 fun BottomTabs(selected: Int, onSelect: (Int) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().background(Color(0x33000000)).padding(horizontal = 24.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().background(Color(0x33000000)).navigationBarsPadding().padding(horizontal = 24.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         TabItem("Focus", 0, selected == 0, onSelect)
@@ -503,7 +503,7 @@ fun SettingsScreen(themeIdx: Int, onTheme: (Int) -> Unit, onBack: () -> Unit) {
     val stop = remember { Diag.lastStop(ctx) }
     val crash = remember { Diag.lastCrash(ctx) }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -513,7 +513,7 @@ fun SettingsScreen(themeIdx: Int, onTheme: (Int) -> Unit, onBack: () -> Unit) {
 
         GlassCard {
             Text("Appearance", fontWeight = FontWeight.Medium)
-            Text("Background", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Text("App colors (the focus screen always stays dark)", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             Palettes.forEachIndexed { i, p ->
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onTheme(i) }.padding(vertical = 6.dp),
@@ -547,6 +547,8 @@ fun SettingsScreen(themeIdx: Int, onTheme: (Int) -> Unit, onBack: () -> Unit) {
                 }
                 Switch(checked = click, onCheckedChange = { click = it; AppSettings.setClick(ctx, it) })
             }
+            Text(remember { Feedback.status(ctx) }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            FilledTonalButton({ Feedback.test(ctx) }) { Text("Test vibration and click") }
         }
 
         if (stop != null || crash != null) GlassCard {

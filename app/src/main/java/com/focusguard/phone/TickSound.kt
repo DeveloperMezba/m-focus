@@ -27,7 +27,7 @@ object TickSound {
                 .setMaxStreams(6)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build()
                 )
@@ -37,6 +37,8 @@ object TickSound {
             pool = sp
         }
     }
+
+    fun isLoaded(): Boolean = loaded
 
     fun play(volume: Float = 0.2f) {
         val now = SystemClock.uptimeMillis()

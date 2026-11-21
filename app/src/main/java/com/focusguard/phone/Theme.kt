@@ -6,13 +6,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-/** Background choices (Settings > Appearance). Used by the app AND the lock screen. */
-data class Palette(val name: String, val top: Int, val mid: Int, val bottom: Int)
+/** Background choices (Settings > Appearance). top/mid/bottom = the app; lock* = the focus (lock) screen, always darker. */
+data class Palette(
+    val name: String, val top: Int, val mid: Int, val bottom: Int,
+    val lockTop: Int, val lockMid: Int, val lockBottom: Int,
+)
+
+private fun same(name: String, t: Int, m: Int, b: Int) = Palette(name, t, m, b, t, m, b)
 
 val Palettes = listOf(
-    Palette("Charcoal purple", 0xFF1B1A21.toInt(), 0xFF252330.toInt(), 0xFF2E2A3B.toInt()),
-    Palette("Charcoal", 0xFF1F2024.toInt(), 0xFF25262B.toInt(), 0xFF2A2B30.toInt()),
-    Palette("Gray", 0xFF2A2B30.toInt(), 0xFF34353B.toInt(), 0xFF3E3F46.toInt()),
+    same("Charcoal purple", 0xFF1B1A21.toInt(), 0xFF252330.toInt(), 0xFF2E2A3B.toInt()),
+    same("Charcoal", 0xFF1F2024.toInt(), 0xFF25262B.toInt(), 0xFF2A2B30.toInt()),
+    same("Gray", 0xFF2A2B30.toInt(), 0xFF34353B.toInt(), 0xFF3E3F46.toInt()),
+    Palette("Ocean", 0xFF0B3A4A.toInt(), 0xFF11566B.toInt(), 0xFF1B7A8C.toInt(),
+        0xFF101A1D.toInt(), 0xFF152227.toInt(), 0xFF1B2D33.toInt()),
+    Palette("Ember", 0xFF3A1A22.toInt(), 0xFF692C38.toInt(), 0xFFA8503C.toInt(),
+        0xFF1D1417.toInt(), 0xFF261A1D.toInt(), 0xFF302024.toInt()),
 )
 
 fun gradientFor(idx: Int): Brush {

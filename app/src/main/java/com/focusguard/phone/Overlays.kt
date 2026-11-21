@@ -34,6 +34,11 @@ fun Context.statusBarHeight(): Int {
     return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
 }
 
+fun Context.navBarHeight(): Int {
+    val id = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+    return if (id > 0) resources.getDimensionPixelSize(id) else 0
+}
+
 fun formatTime(ms: Long): String {
     val s = ms / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s % 3600 / 60, s % 60)
@@ -227,7 +232,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         val col = LinearLayout(svc).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(svc.dp(24), svc.statusBarHeight() + svc.dp(24), svc.dp(24), svc.dp(36))
+            setPadding(svc.dp(24), svc.statusBarHeight() + svc.dp(24), svc.dp(24), maxOf(svc.dp(36), svc.navBarHeight() + svc.dp(16)))
         }
         clock = label("", 52f, "#FFFFFF", true)
         date = label("", 14f, "#B3FFFFFF")
@@ -253,7 +258,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
 
         val pal = Palettes[AppSettings.theme(svc)]
         val frame = FrameLayout(svc).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(pal.top, pal.mid, pal.bottom))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(pal.lockTop, pal.lockMid, pal.lockBottom))
             addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         val lp = WindowManager.LayoutParams(
