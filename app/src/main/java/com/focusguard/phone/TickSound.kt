@@ -38,11 +38,11 @@ object TickSound {
         }
     }
 
-    fun play() {
+    fun play(volume: Float = 0.2f) {
         val now = SystemClock.uptimeMillis()
         if (!loaded || now - last < 20) return   // fast spinning still gives a ratchet, not a buzz
         last = now
-        pool?.play(soundId, 0.4f, 0.4f, 1, 0, 1f)
+        pool?.play(soundId, volume, volume, 1, 0, 1f)
     }
 
     private fun wav(): ByteArray {

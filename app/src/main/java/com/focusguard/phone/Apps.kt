@@ -95,6 +95,16 @@ object Apps {
         ).map { it.activityInfo.packageName }.toSet()
     }.getOrDefault(emptySet())
 
+    /** 5 slots: [side][side][Phone][side][side]. Extras fill the slots nearest the Phone first. */
+    fun dockSlots(c: Context): List<AppItem?> {
+        val items = launchItems(c)                 // Phone first, then the chosen extras
+        val slots = arrayOfNulls<AppItem>(5)
+        slots[2] = items.firstOrNull()
+        val order = intArrayOf(1, 3, 0, 4)
+        items.drop(1).take(4).forEachIndexed { i, app -> slots[order[i]] = app }
+        return slots.toList()
+    }
+
     fun ignoredPackages(c: Context): Set<String> = BASE_IGNORED + imePackages(c)
 
     /** Apps that may be open during a session (this app is deliberately NOT in the list). */

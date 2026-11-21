@@ -7,11 +7,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
@@ -30,19 +32,32 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+
+/** Choices on the Focus tab; kept outside the screen so switching tabs doesn't reset them. */
+class HomeState(ctx: Context) {
+    var minutes by mutableIntStateOf(10)
+    var breakOn by mutableStateOf(Session.prefBreakOn(ctx))
+    var breakEvery by mutableIntStateOf(Session.prefBreakEvery(ctx))
+    var breakLen by mutableIntStateOf(Session.prefBreakLen(ctx))
+}
 
 class MainActivity : ComponentActivity() {
     private var refresh by mutableIntStateOf(0)
@@ -51,21 +66,32 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         TickSound.init(applicationContext)
         setContent {
+            var theme by remember { mutableIntStateOf(AppSettings.theme(this)) }
+            val home = remember { HomeState(this) }
+            var tab by remember { mutableIntStateOf(0) }
+            var showSettings by remember { mutableStateOf(false) }
+            BackHandler(enabled = showSettings) { showSettings = false }
             FocusTheme {
-                Surface(Modifier.fillMaxSize().background(AppGradient), color = Color.Transparent, contentColor = Color.White) {
-                    var tab by remember { mutableIntStateOf(0) }
-                    Column(Modifier.fillMaxSize()) {
-                        Box(Modifier.weight(1f)) {
-                            if (tab == 0) {
-                                Home(refresh) {
-                                    GuardService.instance?.onSessionStarted()
-                                    finishAndRemoveTask()
+                Surface(Modifier.fillMaxSize().background(gradientFor(theme)), color = Color.Transparent, contentColor = Color.White) {
+                    if (showSettings) {
+                        SettingsScreen(theme, { theme = it; AppSettings.setTheme(this, it) }) { showSettings = false }
+                    } else {
+                        Column(Modifier.fillMaxSize()) {
+                            Box(Modifier.weight(1f)) {
+                                if (tab == 0) {
+                                    Home(home, refresh, { showSettings = true }) {
+                                        GuardService.instance?.onSessionStarted()
+                                        runCatching {
+                                            ContextCompat.startForegroundService(this@MainActivity, Intent(this@MainActivity, KeepAliveService::class.java))
+                                        }
+                                        finishAndRemoveTask()
+                                    }
+                                } else {
+                                    ReportScreen(refresh) { showSettings = true }
                                 }
-                            } else {
-                                ReportScreen(refresh)
                             }
+                            BottomTabs(tab) { tab = it }
                         }
-                        BottomTabs(tab) { tab = it }
                     }
                 }
             }
@@ -96,6 +122,11 @@ fun batteryOk(c: Context): Boolean =
 
 fun fmtHM(min: Int): String = if (min < 60) "$min min" else "${min / 60} h ${min % 60} min"
 
+fun hhmm(t: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(t))
+
+fun versionName(ctx: Context): String =
+    runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: ""
+
 // ---------------------------------------------------------------- shared pieces
 
 @Composable
@@ -106,6 +137,24 @@ fun GlassCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.()
         shape = RoundedCornerShape(24.dp),
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+    }
+}
+
+@Composable
+fun GearIcon(onClick: () -> Unit) {
+    val c = Color(0xCCFFFFFF)
+    Canvas(Modifier.size(40.dp).clip(RoundedCornerShape(20.dp)).clickable { onClick() }.padding(8.dp)) {
+        val r = size.minDimension / 2
+        drawCircle(c, r * 0.55f, style = Stroke(4f))
+        for (i in 0 until 8) {
+            val a = Math.toRadians(i * 45.0)
+            drawLine(
+                c,
+                Offset(center.x + (r * 0.72f) * cos(a).toFloat(), center.y + (r * 0.72f) * sin(a).toFloat()),
+                Offset(center.x + r * cos(a).toFloat(), center.y + r * sin(a).toFloat()),
+                strokeWidth = 5f, cap = StrokeCap.Round,
+            )
+        }
     }
 }
 
@@ -148,17 +197,39 @@ fun TabItem(label: String, index: Int, selected: Boolean, onSelect: (Int) -> Uni
     }
 }
 
+/** Phone in the middle, chosen apps on both sides, empty slots as a box with a plus. */
+@Composable
+fun DockRow(slots: List<AppItem?>, onEdit: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+        slots.forEachIndexed { i, app ->
+            val shape = RoundedCornerShape(16.dp)
+            Box(
+                Modifier.size(56.dp).clip(shape)
+                    .background(if (app != null) Color(0x26FFFFFF) else Color(0x14FFFFFF))
+                    .then(if (app == null) Modifier.border(1.dp, Color(0x40FFFFFF), shape) else Modifier)
+                    .then(if (i != 2) Modifier.clickable { onEdit() } else Modifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (app != null) {
+                    val bmp = remember(app.pkg) { app.icon?.let { runCatching { it.toBitmap(96, 96).asImageBitmap() }.getOrNull() } }
+                    if (bmp != null) Image(bmp, app.label, Modifier.fillMaxSize().padding(8.dp))
+                    else Text(app.label.take(1), fontSize = 20.sp)
+                } else {
+                    Text("+", fontSize = 22.sp, color = Color(0x80FFFFFF))
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Focus tab
 
 @Composable
-fun Home(refresh: Int, onStarted: () -> Unit) {
+fun Home(state: HomeState, refresh: Int, onSettings: () -> Unit, onStarted: () -> Unit) {
     val ctx = LocalContext.current
-    var minutes by remember { mutableIntStateOf(50) }
     var showPicker by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
-    var breakOn by remember { mutableStateOf(Session.prefBreakOn(ctx)) }
-    var breakEvery by remember { mutableIntStateOf(Session.prefBreakEvery(ctx)) }
-    var breakLen by remember { mutableIntStateOf(Session.prefBreakLen(ctx)) }
+    var stopSeen by remember { mutableIntStateOf(0) }
 
     var tick by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick++ } }   // notice permission changes while the app is open
@@ -166,10 +237,12 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
     val a11y = remember(refresh, tick) { a11yEnabled(ctx) && GuardService.instance != null }
     val battery = remember(refresh, tick) { batteryOk(ctx) }
     val notif = remember(refresh, tick) { NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName) }
+    val slots = remember(refresh, showPicker) { Apps.dockSlots(ctx) }
     val extras = remember(refresh, showPicker) { Apps.effectiveExtras(ctx).size }
     val today = remember(refresh) { Session.todayMinutes(ctx) }
+    val stop = remember(refresh, stopSeen) { Diag.unseenStop(ctx) }
     val ready = a11y && notif && battery
-    val breakWorks = breakOn && Session.hasBreak(minutes, breakEvery, breakLen)
+    val breakWorks = state.breakOn && Session.hasBreak(state.minutes, state.breakEvery, state.breakLen)
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -178,6 +251,17 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("M Focus", fontSize = 26.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
             Text("${today / 60} h ${today % 60} min today", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(6.dp))
+            GearIcon(onSettings)
+        }
+
+        if (stop != null) GlassCard {
+            Text("Protection stopped", fontWeight = FontWeight.Medium)
+            Text(
+                "At ${hhmm(stop.first)}: ${stop.second}. Check battery and autostart settings for M Focus.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+            )
+            TextButton({ Diag.markSeen(ctx); stopSeen++ }) { Text("OK") }
         }
 
         if (!a11y) SetupRow(
@@ -202,11 +286,11 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
             )
         }
 
-        Dial(minutes, { minutes = it }, Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally))
+        Dial(state.minutes, { state.minutes = it }, Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally))
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             listOf(60 to "1 h", 180 to "3 h", 360 to "6 h", 420 to "7 h").forEach { (m, label) ->
-                FilterChip(selected = minutes == m, onClick = { minutes = m }, label = { Text(label) })
+                FilterChip(selected = state.minutes == m, onClick = { state.minutes = m }, label = { Text(label) })
             }
         }
 
@@ -216,31 +300,31 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
                 Column(Modifier.weight(1f)) {
                     Text("Breaks", fontWeight = FontWeight.Medium)
                     Text(
-                        if (breakOn) "Every $breakEvery min, $breakLen min break" else "Off",
+                        if (state.breakOn) "Every ${state.breakEvery} min, ${state.breakLen} min break" else "Off",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Switch(checked = breakOn, onCheckedChange = {
-                    breakOn = it
-                    Session.savePrefBreak(ctx, breakOn, breakEvery, breakLen)
+                Switch(checked = state.breakOn, onCheckedChange = {
+                    state.breakOn = it
+                    Session.savePrefBreak(ctx, state.breakOn, state.breakEvery, state.breakLen)
                 })
             }
-            if (breakOn) {
+            if (state.breakOn) {
                 Text("Break every (min)", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     listOf(30, 45, 60, 90, 120).forEach { v ->
-                        FilterChip(selected = breakEvery == v, onClick = {
-                            breakEvery = v
-                            Session.savePrefBreak(ctx, breakOn, breakEvery, breakLen)
+                        FilterChip(selected = state.breakEvery == v, onClick = {
+                            state.breakEvery = v
+                            Session.savePrefBreak(ctx, state.breakOn, state.breakEvery, state.breakLen)
                         }, label = { Text("$v") })
                     }
                 }
                 Text("Break length (min)", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(5, 10, 15, 20).forEach { v ->
-                        FilterChip(selected = breakLen == v, onClick = {
-                            breakLen = v
-                            Session.savePrefBreak(ctx, breakOn, breakEvery, breakLen)
+                        FilterChip(selected = state.breakLen == v, onClick = {
+                            state.breakLen = v
+                            Session.savePrefBreak(ctx, state.breakOn, state.breakEvery, state.breakLen)
                         }, label = { Text("$v") })
                     }
                 }
@@ -259,6 +343,8 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
                 }
                 FilledTonalButton({ showPicker = true }) { Text("Choose apps") }
             }
+            Spacer(Modifier.height(4.dp))
+            DockRow(slots) { showPicker = true }
         }
 
         Button(
@@ -271,17 +357,17 @@ fun Home(refresh: Int, onStarted: () -> Unit) {
     if (showPicker) AppPicker { showPicker = false }
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
-        title = { Text("Start $minutes minutes?") },
+        title = { Text("Start ${state.minutes} minutes?") },
         text = {
             Text(
-                if (breakWorks) "Break every $breakEvery min for $breakLen min. You can't stop it early."
+                if (breakWorks) "Break every ${state.breakEvery} min for ${state.breakLen} min. You can't stop it early."
                 else "You can't stop it early."
             )
         },
         confirmButton = {
             TextButton({
                 confirm = false
-                Session.start(ctx, minutes, if (breakWorks) breakEvery else 0, breakLen)
+                Session.start(ctx, state.minutes, if (breakWorks) state.breakEvery else 0, state.breakLen)
                 NotificationBlocker.instance?.sweep()
                 onStarted()
             }) { Text("Start") }
@@ -302,7 +388,7 @@ fun SetupRow(title: String, desc: String, button: String, onClick: () -> Unit) {
 const val MAX_MIN = 480 // 8 hours
 
 /** Clock-style dial: turn it like a minute hand. One full turn = 60 minutes, every minute is selectable.
- *  Every minute gives a soft click and a light tick vibration. */
+ *  Every minute gives feedback (vibration and/or a soft click, see Settings). */
 @Composable
 fun Dial(minutes: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
     val primary = MaterialTheme.colorScheme.primary
@@ -310,7 +396,7 @@ fun Dial(minutes: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
     val tickMajor = MaterialTheme.colorScheme.onSurfaceVariant
     val tickMinor = MaterialTheme.colorScheme.outline
     val current by rememberUpdatedState(minutes)
-    val view = LocalView.current
+    val ctx = LocalContext.current
     Box(modifier.aspectRatio(1f), contentAlignment = Alignment.Center) {
         Canvas(
             Modifier.fillMaxSize().pointerInput(Unit) {
@@ -329,8 +415,7 @@ fun Dial(minutes: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
                     acc = (acc + delta / 6.0).coerceIn(1.0, MAX_MIN.toDouble())  // 6 degrees = 1 minute
                     val m = Math.round(acc).toInt()
                     if (m != current) {
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        TickSound.play()
+                        Feedback.tick(ctx)
                         onChange(m)
                     }
                 }
@@ -408,6 +493,72 @@ fun AppPicker(onClose: () -> Unit) {
     )
 }
 
+// ---------------------------------------------------------------- Settings
+
+@Composable
+fun SettingsScreen(themeIdx: Int, onTheme: (Int) -> Unit, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    var haptic by remember { mutableStateOf(AppSettings.haptic(ctx)) }
+    var click by remember { mutableStateOf(AppSettings.click(ctx)) }
+    val stop = remember { Diag.lastStop(ctx) }
+    val crash = remember { Diag.lastCrash(ctx) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onBack) { Text("\u2039 Back") }
+            Text("Settings", fontSize = 24.sp, fontWeight = FontWeight.Medium)
+        }
+
+        GlassCard {
+            Text("Appearance", fontWeight = FontWeight.Medium)
+            Text("Background", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Palettes.forEachIndexed { i, p ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onTheme(i) }.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(
+                            androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color(p.top), Color(p.mid), Color(p.bottom)))
+                        ).border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(12.dp))
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Text(p.name, Modifier.weight(1f))
+                    RadioButton(selected = themeIdx == i, onClick = null)
+                }
+            }
+        }
+
+        GlassCard {
+            Text("Feedback", fontWeight = FontWeight.Medium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Haptic feedback")
+                    Text("Light vibration on every minute. The click gets softer.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+                Switch(checked = haptic, onCheckedChange = { haptic = it; AppSettings.setHaptic(ctx, it) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Click sound")
+                    Text("Soft click while turning the dial.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+                Switch(checked = click, onCheckedChange = { click = it; AppSettings.setClick(ctx, it) })
+            }
+        }
+
+        if (stop != null || crash != null) GlassCard {
+            Text("Diagnostics", fontWeight = FontWeight.Medium)
+            if (stop != null) Text("Last protection stop: ${hhmm(stop.first)} (${stop.second})", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            if (crash != null) Text("Last error: " + crash.lines().take(2).joinToString(" "), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        }
+
+        Text("M Focus v${versionName(ctx)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
 // ---------------------------------------------------------------- Report tab
 
 fun appLabel(ctx: Context, pkg: String): String =
@@ -415,14 +566,17 @@ fun appLabel(ctx: Context, pkg: String): String =
         .getOrDefault(pkg)
 
 @Composable
-fun ReportScreen(refresh: Int) {
+fun ReportScreen(refresh: Int, onSettings: () -> Unit) {
     val ctx = LocalContext.current
     val r = remember(refresh) { Session.buildReport(ctx) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Report", fontSize = 26.sp, fontWeight = FontWeight.Medium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Report", fontSize = 26.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            GearIcon(onSettings)
+        }
 
         GlassCard {
             Text("Last 7 days", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -452,7 +606,7 @@ fun ReportScreen(refresh: Int) {
             }
         }
         Text(
-            "A day counts for the streak with 10+ focus minutes. Break time is not counted.",
+            "A day counts for the streak with 10+ focus minutes. Break time is not counted.  \u2022  v${versionName(ctx)}",
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
         )
     }

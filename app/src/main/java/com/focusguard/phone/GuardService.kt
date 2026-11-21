@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,6 +18,7 @@ import androidx.core.content.ContextCompat
  *  - an allowed app (Phone, extras) is open -> small timer chip
  *  - anything else (launcher, recents, blocked apps, this app) -> full-screen lock overlay
  * During a break: nothing is blocked; a green "Break mm:ss" chip is shown.
+ * During a phone call (ringing or talking): nothing is ever covered, so you can always answer / hang up.
  */
 class GuardService : AccessibilityService() {
     private lateinit var chip: TimerChip
@@ -24,31 +26,52 @@ class GuardService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var ticking = false
     private var onBreak = false
+    private var wasInCall = false
     private var transitionUntil = 0L                       // ~1s after tapping an app on the lock screen
     private val tempAllowed = mutableSetOf<String>()       // helper packages of an app that was just launched
     private val lastAttempt = mutableMapOf<String, Long>() // debounce for the distraction report
+    private val audio by lazy { getSystemService(AudioManager::class.java) }
+
+    /** Ringing or talking on a normal phone call (no permission needed to read this). */
+    private fun inCall(): Boolean {
+        val m = runCatching { audio.mode }.getOrDefault(AudioManager.MODE_NORMAL)
+        return m == AudioManager.MODE_RINGTONE || m == AudioManager.MODE_IN_CALL
+    }
 
     private val tick = object : Runnable {
         override fun run() {
-            val rem = Session.remainingMs(this@GuardService)
-            if (rem <= 0) {
-                endSession()
-                return
+            try {
+                tickOnce()
+            } catch (e: Exception) {
+                Diag.logCrash(this@GuardService, e)   // never let an error kill the service
             }
-            val ph = Session.phase(this@GuardService)
-            if (ph.onBreak != onBreak) {
-                onBreak = ph.onBreak
-                tempAllowed.clear()
-                if (onBreak) { blocker.hide(); chip.show() } else showBlocker()
-                Chime.play()
-            }
-            if (onBreak) {
-                chip.update("Break " + formatTime(ph.untilChangeMs), true)
-            } else {
-                chip.update(formatTime(rem), false)
-                blocker.update(rem, ph.untilChangeMs)
-            }
-            handler.postDelayed(this, 1000)
+            if (ticking) handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun tickOnce() {
+        val rem = Session.remainingMs(this)
+        if (rem <= 0) {
+            endSession()
+            return
+        }
+        val ph = Session.phase(this)
+        if (ph.onBreak != onBreak) {
+            onBreak = ph.onBreak
+            tempAllowed.clear()
+            if (onBreak) { blocker.hide(); chip.show() } else showBlocker()
+            Chime.play()
+        }
+        val call = inCall()
+        if (call != wasInCall) {
+            wasInCall = call
+            if (call) { blocker.hide(); chip.show() } else if (!onBreak) showBlocker()
+        }
+        if (onBreak) {
+            chip.update("Break " + formatTime(ph.untilChangeMs), true)
+        } else {
+            chip.update(formatTime(rem), false)
+            blocker.update(rem, ph.untilChangeMs)
         }
     }
 
@@ -71,8 +94,10 @@ class GuardService : AccessibilityService() {
             this, screenOn, IntentFilter(Intent.ACTION_SCREEN_ON), ContextCompat.RECEIVER_NOT_EXPORTED
         )
         if (Session.isActive(this)) {
+            runCatching { ContextCompat.startForegroundService(this, Intent(this, KeepAliveService::class.java)) }
             onBreak = Session.phase(this).onBreak
-            if (onBreak) chip.show() else blocker.show()
+            wasInCall = inCall()
+            if (onBreak || wasInCall) chip.show() else blocker.show()
             startTicking()
         }
     }
@@ -92,6 +117,10 @@ class GuardService : AccessibilityService() {
 
     private fun showBlocker() {
         if (onBreak) return
+        if (inCall()) {                      // never cover a call screen
+            blocker.hide(); chip.show(); startTicking()
+            return
+        }
         chip.hide()
         blocker.show()
         startTicking()
@@ -108,11 +137,13 @@ class GuardService : AccessibilityService() {
         val finished = Session.complete(this)
         ticking = false
         onBreak = false
+        wasInCall = false
         tempAllowed.clear()
         lastAttempt.clear()
         handler.removeCallbacks(tick)
         chip.hide()
         blocker.hide()
+        runCatching { stopService(Intent(this, KeepAliveService::class.java)) }
         if (finished) Chime.play()
     }
 
@@ -133,6 +164,14 @@ class GuardService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
+        try {
+            handleEvent(e)
+        } catch (x: Exception) {
+            Diag.logCrash(this, x)
+        }
+    }
+
+    private fun handleEvent(e: AccessibilityEvent) {
         if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         if (!Session.isActive(this)) {
             if (Session.endAt(this) > 0) endSession() else { chip.hide(); blocker.hide() }
@@ -151,6 +190,11 @@ class GuardService : AccessibilityService() {
             showBlocker()
             return
         }
+        // A call is ringing or running: never cover its screen, whatever the phone's call app is called.
+        if (inCall()) {
+            blocker.hide(); chip.show()
+            return
+        }
         // Notification shade, keyboard, permission dialogs: keep the current state.
         if (pkg in Apps.ignoredPackages(this)) return
         val isLauncher = pkg in Apps.launcherPackages(this)
@@ -166,7 +210,13 @@ class GuardService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (Session.isActive(this)) Diag.noteStop(this, "accessibility service was unbound")
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
+        if (Session.isActive(this)) Diag.noteStop(this, "accessibility service was stopped by the system")
         if (instance === this) instance = null
         handler.removeCallbacks(tick)
         runCatching { unregisterReceiver(screenOn) }

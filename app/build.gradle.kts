@@ -10,10 +10,28 @@ android {
         applicationId = "com.focusguard.phone"
         minSdk = 27
         targetSdk = 35
-        versionCode = 4
-        versionName = "2.5"
+        versionCode = 5
+        versionName = "2.6"
     }
-    buildTypes { release { isMinifyEnabled = false } }
+    // Same signing key for every build, so a new APK installs over the old one.
+    // The key comes from GitHub secrets (see workflow). Without them the default debug key is used.
+    signingConfigs {
+        create("shared") {
+            val ksPath = System.getenv("KEYSTORE_FILE")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release { isMinifyEnabled = false }
+        debug {
+            if (System.getenv("KEYSTORE_FILE") != null) signingConfig = signingConfigs.getByName("shared")
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

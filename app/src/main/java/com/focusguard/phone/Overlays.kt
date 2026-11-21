@@ -20,6 +20,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.graphics.drawable.toBitmap
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -159,7 +160,8 @@ class RingView(ctx: Context) : View(ctx) {
 /**
  * Full-screen lock screen drawn by the accessibility service. It covers the launcher,
  * recents and every non-allowed app, so there is nothing to tap or swipe away.
- * Shows clock on top, countdown in the middle, allowed apps at the bottom.
+ * Shows clock on top, countdown in the middle, and a dock with 5 slots at the bottom:
+ * [side][side][Phone][side][side]. Empty slots are shown but do nothing while a session runs.
  */
 class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch: (String) -> Unit) {
     private val wm = svc.getSystemService(WindowManager::class.java)
@@ -176,24 +178,48 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         if (light) typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
     }
 
-    private fun appView(item: AppItem): View = LinearLayout(svc).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        contentDescription = item.label
-        addView(ImageView(svc).apply { setImageDrawable(item.icon) }, LinearLayout.LayoutParams(svc.dp(44), svc.dp(44)))
-        // The overlay is visible while this runs, so Android allows the launch.
-        // The overlay hides itself when the allowed app's window appears.
-        setOnClickListener {
-            onLaunch(item.pkg)
-            runCatching { svc.startActivity(Intent(item.intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    /** Every slot is the same rounded square, whatever the app's own icon looks like. */
+    private fun slotView(item: AppItem?): View {
+        val tile = FrameLayout(svc).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = svc.dp(16).toFloat()
+                setColor(Color.parseColor(if (item != null) "#26FFFFFF" else "#14FFFFFF"))
+                if (item == null) setStroke(svc.dp(1), Color.parseColor("#40FFFFFF"))
+            }
         }
+        if (item != null) {
+            val bmp = item.icon?.let { runCatching { it.toBitmap(96, 96) }.getOrNull() }
+            tile.contentDescription = item.label
+            tile.addView(
+                ImageView(svc).apply {
+                    setImageBitmap(bmp)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setPadding(svc.dp(8), svc.dp(8), svc.dp(8), svc.dp(8))
+                },
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            // The overlay is visible while this runs, so Android allows the launch.
+            // The overlay hides itself when the allowed app's window appears.
+            tile.setOnClickListener {
+                onLaunch(item.pkg)
+                runCatching { svc.startActivity(Intent(item.intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+        } else {
+            tile.addView(
+                label("+", 22f, "#55FFFFFF"),
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+        }
+        return tile
     }
 
-    private fun appRow(items: List<AppItem>): LinearLayout = LinearLayout(svc).apply {
+    private fun dockRow(slots: List<AppItem?>): LinearLayout = LinearLayout(svc).apply {
         orientation = LinearLayout.HORIZONTAL
-        setPadding(0, svc.dp(6), 0, svc.dp(6))
-        items.forEach { addView(appView(it), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
-        repeat(5 - items.size) { addView(View(svc), LinearLayout.LayoutParams(0, 1, 1f)) }
+        slots.forEach { item ->
+            val cell = FrameLayout(svc)
+            cell.addView(slotView(item), FrameLayout.LayoutParams(svc.dp(56), svc.dp(56), Gravity.CENTER))
+            addView(cell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
     }
 
     fun show() {
@@ -213,23 +239,21 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         box.addView(ring, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         col.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // bottom "dock": a soft glass box holding Phone + the chosen apps
+        // bottom "dock": a soft glass box with the 5 slots
         val dock = LinearLayout(svc).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(svc.dp(8), svc.dp(10), svc.dp(8), svc.dp(10))
+            setPadding(svc.dp(8), svc.dp(12), svc.dp(8), svc.dp(12))
             background = GradientDrawable().apply {
                 cornerRadius = svc.dp(28).toFloat()
                 setColor(Color.parseColor("#26FFFFFF"))
             }
         }
-        Apps.launchItems(svc).chunked(5).forEach { dock.addView(appRow(it)) }
+        dock.addView(dockRow(Apps.dockSlots(svc)))
         col.addView(dock, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        val pal = Palettes[AppSettings.theme(svc)]
         val frame = FrameLayout(svc).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.parseColor("#1B1A21"), Color.parseColor("#252330"), Color.parseColor("#2E2A3B")),
-            )
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(pal.top, pal.mid, pal.bottom))
             addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         val lp = WindowManager.LayoutParams(
