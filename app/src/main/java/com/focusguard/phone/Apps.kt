@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.SystemClock
 import android.telecom.TelecomManager
 import android.view.inputmethod.InputMethodManager
 
@@ -67,30 +68,78 @@ object Apps {
         "com.samsung.android.incallui", "com.samsung.android.dialer",
     )
 
+    /** Parts of a package name that only in-call / dialer / telecom windows use. */
+    private val CALL_HINTS = listOf("incall", "dialer", "telecom", "callui", "callservice", "telephonyui")
+
+    private var cachedDialers: Set<String>? = null
+    private var cachedDialersAt = 0L
+    private var cachedAllowed: Set<String>? = null
+    private var cachedAllowedAt = 0L
+    private var cachedLaunchers: Set<String>? = null
+    private var cachedLaunchersAt = 0L
+    private var cachedIgnored: Set<String>? = null
+    private var cachedIgnoredAt = 0L
+    private var cachedBrowsers: Set<String>? = null
+    private var cachedBrowsersAt = 0L
+
     private fun prefs(c: Context) = c.getSharedPreferences("fg", Context.MODE_PRIVATE)
 
     fun getExtras(c: Context): Set<String> = prefs(c).getStringSet("extras", emptySet()) ?: emptySet()
-    fun setExtras(c: Context, s: Set<String>) = prefs(c).edit().putStringSet("extras", s.take(MAX_EXTRAS).toSet()).apply()
+    fun setExtras(c: Context, s: Set<String>) {
+        prefs(c).edit().putStringSet("extras", s.take(MAX_EXTRAS).toSet()).apply()
+        cachedAllowed = null
+    }
 
     /** Browsers can open social sites, so they can't be added as extras either. */
-    fun browserPackages(c: Context): Set<String> = runCatching {
-        c.packageManager.queryIntentActivities(
-            Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com")).addCategory(Intent.CATEGORY_BROWSABLE), 0
-        ).map { it.activityInfo.packageName }.toSet()
-    }.getOrDefault(emptySet())
+    fun browserPackages(c: Context): Set<String> {
+        val now = SystemClock.uptimeMillis()
+        cachedBrowsers?.let { if (now - cachedBrowsersAt < 60_000) return it }
+        val out = runCatching {
+            c.packageManager.queryIntentActivities(
+                Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com")).addCategory(Intent.CATEGORY_BROWSABLE), 0
+            ).map { it.activityInfo.packageName }.toSet()
+        }.getOrDefault(emptySet())
+        cachedBrowsers = out
+        cachedBrowsersAt = now
+        return out
+    }
 
     /** Extras that are really allowed: social apps and browsers are always removed. */
     fun effectiveExtras(c: Context): Set<String> =
         (getExtras(c) - BLOCKED - AI_ALL - browserPackages(c)).take(MAX_EXTRAS).toSet()
 
+    /** Pre-installed packages. Used to stay away from system screens we don't recognise. */
+    fun isSystemPackage(c: Context, pkg: String): Boolean = runCatching {
+        val ai = c.packageManager.getApplicationInfo(pkg, 0)
+        (ai.flags and (android.content.pm.ApplicationInfo.FLAG_SYSTEM or
+            android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+    }.getOrDefault(false)
+
     private fun dialerPackages(c: Context): Set<String> {
+        val now = SystemClock.uptimeMillis()
+        cachedDialers?.let { if (now - cachedDialersAt < 60_000) return it }
         val out = mutableSetOf<String>()
         runCatching { c.getSystemService(TelecomManager::class.java)?.defaultDialerPackage?.let { out += it } }
         runCatching {
             c.packageManager.queryIntentActivities(Intent(Intent.ACTION_DIAL), 0)
                 .forEach { out += it.activityInfo.packageName }
         }
+        cachedDialers = out
+        cachedDialersAt = now
         return out
+    }
+
+    /**
+     * True for the in-call screen and the dialer itself: these are the only windows that may
+     * stay usable during a call. Matched by package name hints so it also works on phones whose
+     * in-call UI lives in an unexpected package.
+     */
+    fun isCallUi(c: Context, pkg: String, cls: String): Boolean {
+        if (pkg in CALL_PKGS || pkg in dialerPackages(c)) return true
+        val p = pkg.lowercase()
+        if (CALL_HINTS.any { p.contains(it) }) return true
+        val k = cls.lowercase()
+        return k.contains("incall") || k.contains("callactivity") || k.contains("dialtacts")
     }
 
     private fun imePackages(c: Context): Set<String> =
@@ -99,11 +148,18 @@ object Apps {
         }.getOrDefault(emptySet())
 
     /** Home screen / recents apps. Going there ends any temporary permission. */
-    fun launcherPackages(c: Context): Set<String> = runCatching {
-        c.packageManager.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
-        ).map { it.activityInfo.packageName }.toSet()
-    }.getOrDefault(emptySet())
+    fun launcherPackages(c: Context): Set<String> {
+        val now = SystemClock.uptimeMillis()
+        cachedLaunchers?.let { if (now - cachedLaunchersAt < 60_000) return it }
+        val out = runCatching {
+            c.packageManager.queryIntentActivities(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
+            ).map { it.activityInfo.packageName }.toSet()
+        }.getOrDefault(emptySet())
+        cachedLaunchers = out
+        cachedLaunchersAt = now
+        return out
+    }
 
     /** 5 slots: [side][side][Phone][side][side]. Extras fill the slots nearest the Phone first. */
     fun dockSlots(c: Context): List<AppItem?> {
@@ -115,11 +171,24 @@ object Apps {
         return slots.toList()
     }
 
-    fun ignoredPackages(c: Context): Set<String> = BASE_IGNORED + imePackages(c)
+    fun ignoredPackages(c: Context): Set<String> {
+        val now = SystemClock.uptimeMillis()
+        cachedIgnored?.let { if (now - cachedIgnoredAt < 60_000) return it }
+        val out = BASE_IGNORED + imePackages(c)
+        cachedIgnored = out
+        cachedIgnoredAt = now
+        return out
+    }
 
     /** Apps that may be open during a session (this app is deliberately NOT in the list). */
-    fun allowedApps(c: Context): Set<String> =
-        (CALL_PKGS + dialerPackages(c) + effectiveExtras(c)) - BLOCKED - AI_ALL
+    fun allowedApps(c: Context): Set<String> {
+        val now = SystemClock.uptimeMillis()
+        cachedAllowed?.let { if (now - cachedAllowedAt < 60_000) return it }
+        val out = (CALL_PKGS + dialerPackages(c) + effectiveExtras(c)) - BLOCKED - AI_ALL
+        cachedAllowed = out
+        cachedAllowedAt = now
+        return out
+    }
 
     /** Apps shown on the lock screen: Phone + up to 4 extras. */
     fun launchItems(c: Context): List<AppItem> {

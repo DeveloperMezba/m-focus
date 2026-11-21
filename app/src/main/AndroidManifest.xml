@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Needed on Android 11+ to see the dialer / launcher / browser packages we query. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />

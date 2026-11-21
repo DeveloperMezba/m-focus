@@ -90,16 +90,26 @@ class TimerChip(private val svc: AccessibilityService) {
         var downY = 0f
         var startX = 0
         var startY = 0
+        val dm = svc.resources.displayMetrics
         tv.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.x = startX + (e.rawX - downX).toInt()
-                    lp.y = startY + (e.rawY - downY).toInt()
+                    // Keep the chip on screen: a position dragged into a corner is remembered forever.
+                    lp.x = (startX + (e.rawX - downX).toInt()).coerceIn(-dm.widthPixels / 2, dm.widthPixels / 2)
+                    lp.y = (startY + (e.rawY - downY).toInt()).coerceIn(0, dm.heightPixels)
                     runCatching { wm.updateViewLayout(tv, lp) }
                 }
                 MotionEvent.ACTION_UP -> prefs.edit().putInt("chip_x", lp.x).putInt("chip_y", lp.y).apply()
             }
+            true
+        }
+        // Long-press puts the chip back in its default spot, in case it ever gets lost.
+        tv.setOnLongClickListener {
+            lp.x = 0
+            lp.y = svc.dp(2)
+            prefs.edit().putInt("chip_x", 0).putInt("chip_y", svc.dp(2)).apply()
+            runCatching { wm.updateViewLayout(tv, lp) }
             true
         }
         runCatching { wm.addView(tv, lp) }.onSuccess {
@@ -168,12 +178,18 @@ class RingView(ctx: Context) : View(ctx) {
  * Shows clock on top, countdown in the middle, and a dock with 5 slots at the bottom:
  * [side][side][Phone][side][side]. Empty slots are shown but do nothing while a session runs.
  */
-class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch: (String) -> Unit) {
+class BlockerOverlay(
+    private val svc: AccessibilityService,
+    private val onLaunch: (String) -> Unit,
+    private val onReturnToCall: () -> Unit,
+) {
     private val wm = svc.getSystemService(WindowManager::class.java)
     private var root: FrameLayout? = null
     private var clock: TextView? = null
     private var date: TextView? = null
     private var ring: RingView? = null
+    private var callBtn: TextView? = null
+    private var dockBox: LinearLayout? = null
 
     private fun label(text: String, sp: Float, color: String, light: Boolean = false) = TextView(svc).apply {
         this.text = text
@@ -227,7 +243,7 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         }
     }
 
-    fun show() {
+    fun show(inCall: Boolean = false) {
         if (root != null) return
         val col = LinearLayout(svc).apply {
             orientation = LinearLayout.VERTICAL
@@ -244,6 +260,22 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         box.addView(ring, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         col.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        // While a call is ringing or running: the only way back to it from here.
+        val btn = label("Return to call", 15f, "#FF3B5C").apply {
+            background = GradientDrawable().apply {
+                cornerRadius = svc.dp(24).toFloat()
+                setColor(Color.parseColor("#26FFFFFF"))
+                setStroke(svc.dp(1), Color.parseColor("#66FF3B5C"))
+            }
+            setPadding(svc.dp(24), svc.dp(12), svc.dp(24), svc.dp(12))
+            setOnClickListener { onReturnToCall() }
+            visibility = if (inCall) View.VISIBLE else View.GONE
+        }
+        callBtn = btn
+        col.addView(btn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = svc.dp(16) })
+
         // bottom "dock": a soft glass box with the 5 slots
         val dock = LinearLayout(svc).apply {
             orientation = LinearLayout.VERTICAL
@@ -252,7 +284,10 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
                 cornerRadius = svc.dp(28).toFloat()
                 setColor(Color.parseColor("#26FFFFFF"))
             }
+            // During a call the phone is for the call only: no app dock.
+            visibility = if (inCall) View.GONE else View.VISIBLE
         }
+        dockBox = dock
         dock.addView(dockRow(Apps.dockSlots(svc)))
         col.addView(dock, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -285,9 +320,13 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         clock = null
         date = null
         ring = null
+        callBtn = null
+        dockBox = null
     }
 
-    fun update(remMs: Long, breakInMs: Long = -1) {
+    fun isShowing(): Boolean = root != null
+
+    fun update(remMs: Long, breakInMs: Long = -1, inCall: Boolean = false) {
         val now = Date()
         clock?.text = SimpleDateFormat("hh:mm", Locale.getDefault()).format(now)
         date?.text = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
@@ -295,8 +334,10 @@ class BlockerOverlay(private val svc: AccessibilityService, private val onLaunch
         ring?.apply {
             fraction = remMs.toFloat() / total
             main = formatTime(remMs)
-            extra = if (breakInMs > 0) "break in " + formatTime(breakInMs) else ""
+            extra = if (inCall) "on a call" else if (breakInMs > 0) "break in " + formatTime(breakInMs) else ""
             invalidate()
         }
+        callBtn?.visibility = if (inCall) View.VISIBLE else View.GONE
+        dockBox?.visibility = if (inCall) View.GONE else View.VISIBLE
     }
 }

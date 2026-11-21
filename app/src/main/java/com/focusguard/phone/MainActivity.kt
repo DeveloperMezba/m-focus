@@ -101,7 +101,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (Session.isActive(this)) {
-            GuardService.instance?.onSessionStarted()
+            // Opening this app during a session must not break out of it; GuardService already
+            // covers it via handleEvent(). Just make sure the keep-alive notification exists.
+            runCatching {
+                ContextCompat.startForegroundService(this, Intent(this, KeepAliveService::class.java))
+            }
             finishAndRemoveTask()
         }
         refresh++
@@ -281,9 +285,14 @@ fun Home(state: HomeState, refresh: Int, onSettings: () -> Unit, onStarted: () -
             "Keeps M Focus running.",
             "Allow",
         ) {
-            ctx.startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
-            )
+            runCatching {
+                ctx.startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
+                )
+            }.onFailure {
+                // Some phones (and the Play-policy-safe Android builds) reject the direct request.
+                runCatching { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+            }
         }
 
         Dial(state.minutes, { state.minutes = it }, Modifier.fillMaxWidth(0.8f).align(Alignment.CenterHorizontally))
@@ -624,6 +633,7 @@ fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
 
 @Composable
 fun WeekChart(days: List<DayStat>) {
+    if (days.isEmpty()) return
     val maxMin = maxOf(60, days.maxOf { it.focusMin })
     val dim = Color(0x22FFFFFF)
     Column {

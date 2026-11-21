@@ -75,33 +75,67 @@ object Session {
         if (e <= 0 || b <= 0 || start == 0L) return PhaseInfo(false, -1)
         val now = System.currentTimeMillis()
         val cycle = (e + b) * 60_000L
-        val k = (now - start) / cycle
+        val k = ((now - start) / cycle).coerceAtLeast(0)
         val breakStart = start + k * cycle + e * 60_000L
         val breakEnd = breakStart + b * 60_000L
         val valid = (breakEnd - start) + MIN_FOCUS_AFTER_BREAK * 60_000L <= total * 60_000L
         if (valid && now >= breakStart && now < breakEnd) return PhaseInfo(true, breakEnd - now)
         if (valid && now < breakStart) return PhaseInfo(false, breakStart - now)
+        // No break left in this session: only say when the next one would be if it still fits.
         val nStart = start + (k + 1) * cycle + e * 60_000L
         val nEnd = nStart + b * 60_000L
         val nValid = (nEnd - start) + MIN_FOCUS_AFTER_BREAK * 60_000L <= total * 60_000L
         return PhaseInfo(false, if (nValid) nStart - now else -1)
     }
 
-    /** Call when the timer has run out. Returns true only the first time it really completes. */
+    /**
+     * Call when the timer has run out. Returns true only the first time it really completes, so
+     * the report never gets the same session twice (service, notification and app all call it).
+     */
+    @Synchronized
     fun complete(c: Context): Boolean {
         val e = endAt(c)
         if (e == 0L || e > System.currentTimeMillis()) return false
+        val stored = p(c)
         val total = totalMin(c)
         val focus = focusMinutes(total, breakEvery(c), breakLen(c))
         val start = startAt(c)
         val day = if (start > 0) Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).toLocalDate()
         else LocalDate.now()
-        val attempts = try { JSONObject(p(c).getString("attempts", "{}") ?: "{}") } catch (x: Exception) { JSONObject() }
-        val rec = JSONObject().put("d", day.toString()).put("f", focus).put("t", total).put("a", attempts)
-        val arr = historyArr(c).put(rec)
+        val attempts = runCatching { JSONObject(stored.getString("attempts", "{}") ?: "{}") }.getOrDefault(JSONObject())
+        // A session that runs past midnight is split between both days, so the report and the
+        // streak don't give the whole night to yesterday.
+        val startZ = if (start > 0) start else System.currentTimeMillis()
+        val startLocal = Instant.ofEpochMilli(startZ).atZone(ZoneId.systemDefault())
+        val endLocal = Instant.ofEpochMilli(startZ + focus * 60_000L).atZone(ZoneId.systemDefault())
+        val endDay = endLocal.toLocalDate()
+        val records = if (endDay == day) {
+            listOf(day to focus)
+        } else {
+            val minutesBeforeMidnight = java.time.Duration.between(
+                startLocal, endDay.atStartOfDay(startLocal.zone)
+            ).toMinutes().coerceIn(0, focus.toLong()).toInt()
+            listOf(day to minutesBeforeMidnight, endDay to (focus - minutesBeforeMidnight))
+                .filter { it.second > 0 }
+        }
+        val arr = historyArr(c)
+        records.forEach { (d, f) ->
+            arr.put(
+                JSONObject().put("d", d.toString()).put("f", f).put("t", total).put("a", attempts)
+            )
+        }
         val trimmed = JSONArray()
         for (i in maxOf(0, arr.length() - 400) until arr.length()) trimmed.put(arr.get(i))
-        p(c).edit().putString("history", trimmed.toString()).putString("attempts", "{}").putLong("end", 0L).apply()
+        // Clear the session in the same commit, so a second caller can't record it again.
+        stored.edit()
+            .putString("history", trimmed.toString())
+            .putString("attempts", "{}")
+            .putLong("end", 0L)
+            .putLong("start", 0L)
+            .putInt("minutes", 0)
+            .putInt("break_every", 0)
+            .putInt("break_len", 0)
+            .commit()
         return true
     }
 
