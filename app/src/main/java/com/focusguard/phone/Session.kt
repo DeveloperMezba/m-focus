@@ -93,7 +93,16 @@ object Session {
      * the report never gets the same session twice (service, notification and app all call it).
      */
     @Synchronized
-    fun complete(c: Context): Boolean {
+    fun complete(c: Context): Boolean = try {
+        completeInner(c)
+    } catch (x: Exception) {
+        Diag.logCrash(c, x)
+        // a broken record must never loop or crash the app: drop the session
+        runCatching { p(c).edit().putLong("end", 0L).putLong("start", 0L).commit() }
+        false
+    }
+
+    private fun completeInner(c: Context): Boolean {
         val e = endAt(c)
         if (e == 0L || e > System.currentTimeMillis()) return false
         val stored = p(c)
@@ -162,7 +171,7 @@ object Session {
         val byDay = HashMap<LocalDate, Int>()
         val arr = historyArr(c)
         for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
+            val o = arr.optJSONObject(i) ?: continue
             val d = runCatching { LocalDate.parse(o.getString("d")) }.getOrNull() ?: continue
             byDay[d] = (byDay[d] ?: 0) + o.optInt("f")
         }
@@ -184,7 +193,7 @@ object Session {
         val attempts = HashMap<String, Int>()
         val arr = historyArr(c)
         for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
+            val o = arr.optJSONObject(i) ?: continue
             val d = runCatching { LocalDate.parse(o.getString("d")) }.getOrNull() ?: continue
             if (d.isBefore(weekStart)) continue
             sessions++

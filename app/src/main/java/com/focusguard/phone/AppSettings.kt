@@ -26,6 +26,10 @@ object Feedback {
 
     /** One step of the dial. */
     fun tick(c: Context) {
+        runCatching { tickInner(c) }
+    }
+
+    private fun tickInner(c: Context) {
         val now = SystemClock.uptimeMillis()
         if (now - last < 22) return
         last = now

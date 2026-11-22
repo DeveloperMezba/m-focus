@@ -9,9 +9,9 @@ android {
     defaultConfig {
         applicationId = "com.focusguard.phone"
         minSdk = 27
-        targetSdk = 35
-        versionCode = 6
-        versionName = "2.7"
+        targetSdk = 34   // Android 15 does not force edge-to-edge for apps targeting 34
+        versionCode = 8
+        versionName = "2.8"
     }
     // Same signing key for every build, so a new APK installs over the old one.
     // The key comes from GitHub secrets (see workflow). Without them the default debug key is used.

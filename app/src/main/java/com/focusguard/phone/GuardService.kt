@@ -157,21 +157,29 @@ class GuardService : AccessibilityService() {
 
     private val screenOn = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            if (!Session.isActive(c)) return
-            // Never cover the system lock screen, or the phone could not be unlocked.
-            if (keyguardLocked()) { hideAll(); return }
-            when {
-                onBreak -> chip.show()
-                callActive() && isCallWindow(lastPkg ?: "", "") -> chip.show()
-                isAllowed(lastPkg) -> showChip()
-                else -> showBlocker()
+            try {
+                if (!Session.isActive(c)) return
+                // Never cover the system lock screen, or the phone could not be unlocked.
+                if (keyguardLocked()) { hideAll(); return }
+                when {
+                    onBreak -> chip.show()
+                    callActive() && isCallWindow(lastPkg ?: "", "") -> chip.show()
+                    isAllowed(lastPkg) -> showChip()
+                    else -> showBlocker()
+                }
+            } catch (t: Throwable) {
+                Diag.logCrash(c, t)
             }
         }
     }
 
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            hideAll()      // the system lock screen takes over while the display is off
+            try {
+                hideAll()      // the system lock screen takes over while the display is off
+            } catch (t: Throwable) {
+                Diag.logCrash(c, t)
+            }
         }
     }
 
@@ -186,6 +194,14 @@ class GuardService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
+        try {
+            connectInner()
+        } catch (t: Throwable) {
+            Diag.logCrash(this, t)       // an error here must not take the service down
+        }
+    }
+
+    private fun connectInner() {
         // The system can bind the service again after it was restarted: never stack overlays.
         if (::chip.isInitialized) runCatching { chip.hide() }
         if (::blocker.isInitialized) runCatching { blocker.hide() }
@@ -225,16 +241,28 @@ class GuardService : AccessibilityService() {
     fun onCallNotification() {
         if (onBreak || !Session.isActive(this)) return
         handler.post {
-            if (onBreak) return@post
-            wasInCall = true
-            blocker.hide()
-            chip.show()
-            startTicking()
+            try {
+                if (onBreak) return@post
+                wasInCall = true
+                blocker.hide()
+                chip.show()
+                startTicking()
+            } catch (t: Throwable) {
+                Diag.logCrash(this, t)
+            }
         }
     }
 
     /** Called by MainActivity right after a session starts. */
     fun onSessionStarted() {
+        try {
+            sessionStartedInner()
+        } catch (t: Throwable) {
+            Diag.logCrash(this, t)
+        }
+    }
+
+    private fun sessionStartedInner() {
         onBreak = false
         tempAllowed.clear()
         if (callActive()) {                   // a session started during a call: keep the call usable
@@ -302,8 +330,19 @@ class GuardService : AccessibilityService() {
         Session.logAttempt(this, pkg)
     }
 
+    private var lastEventKey = ""
+    private var lastEventAt = 0L
+
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         try {
+            // Fast app switching floods us with identical events: handle each only once per instant.
+            if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                val key = "" + e.packageName + "/" + e.className
+                val now = SystemClock.uptimeMillis()
+                if (key == lastEventKey && now - lastEventAt < 120) return
+                lastEventKey = key
+                lastEventAt = now
+            }
             handleEvent(e)
         } catch (x: Exception) {
             Diag.logCrash(this, x)

@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,8 +44,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.core.graphics.drawable.toBitmap
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -64,6 +67,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Let the system keep the app clear of the status and navigation bars (classic behaviour on every Android version).
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         TickSound.init(applicationContext)
         setContent {
             var theme by remember { mutableIntStateOf(AppSettings.theme(this)) }
@@ -563,10 +568,18 @@ fun SettingsScreen(themeIdx: Int, onTheme: (Int) -> Unit, onBack: () -> Unit) {
         if (stop != null || crash != null) GlassCard {
             Text("Diagnostics", fontWeight = FontWeight.Medium)
             if (stop != null) Text("Last protection stop: ${hhmm(stop.first)} (${stop.second})", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-            if (crash != null) Text("Last error: " + crash.lines().take(2).joinToString(" "), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            if (crash != null) SelectionContainer {   // long-press to copy
+                Text("Last error: " + crash.lines().take(7).joinToString("\n"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            }
         }
 
-        Text("M Focus v${versionName(ctx)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        // ---- App update: the last item; version number is the small line under the title
+        var showUpdate by remember { mutableStateOf(false) }
+        GlassCard(Modifier.clip(RoundedCornerShape(24.dp)).clickable { showUpdate = true }) {
+            Text("App update", fontWeight = FontWeight.Medium)
+            Text("Version ${versionName(ctx)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        }
+        if (showUpdate) UpdateDialog { showUpdate = false }
     }
 }
 
@@ -662,4 +675,110 @@ fun WeekChart(days: List<DayStat>) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------- App update
+
+sealed class UpdateUi {
+    object Checking : UpdateUi()
+    object NoInternet : UpdateUi()
+    data class UpToDate(val version: String) : UpdateUi()
+    data class Available(val info: UpdateInfo) : UpdateUi()
+    data class Downloading(val pct: Int) : UpdateUi()
+    data class Ready(val file: java.io.File) : UpdateUi()
+    data class Failed(val message: String) : UpdateUi()
+}
+
+/** Checks GitHub when opened. "Update" (bottom right) downloads, then "Install" opens the Android installer. */
+@Composable
+fun UpdateDialog(onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var ui by remember { mutableStateOf<UpdateUi>(UpdateUi.Checking) }
+    var job by remember { mutableStateOf<Job?>(null) }
+
+    LaunchedEffect(Unit) {
+        ui = withContext(Dispatchers.IO) {
+            when (val r = Updater.check(ctx)) {
+                is UpdateResult.NoInternet -> UpdateUi.NoInternet
+                is UpdateResult.UpToDate -> UpdateUi.UpToDate(r.version)
+                is UpdateResult.Available -> UpdateUi.Available(r.info)
+                is UpdateResult.Failed -> UpdateUi.Failed(r.message)
+            }
+        }
+    }
+
+    val startDownload: (UpdateInfo) -> Unit = { info ->
+        job = scope.launch {
+            ui = UpdateUi.Downloading(0)
+            val result = withContext(Dispatchers.IO) {
+                runCatching { Updater.download(ctx, info, { p -> ui = UpdateUi.Downloading(p) }, { !isActive }) }
+            }
+            val file = result.getOrNull()
+            ui = when {
+                file != null -> UpdateUi.Ready(file)
+                result.exceptionOrNull()?.message == "No internet connection" -> UpdateUi.NoInternet
+                else -> UpdateUi.Failed(result.exceptionOrNull()?.message ?: "Download failed. Please try again.")
+            }
+        }
+    }
+
+    val doInstall: (java.io.File) -> Unit = { file ->
+        if (!Updater.canInstall(ctx)) {
+            Toast.makeText(ctx, "Allow \"Install unknown apps\" for M Focus, then tap Install again.", Toast.LENGTH_LONG).show()
+            runCatching { Updater.openInstallPermission(ctx) }
+        } else {
+            runCatching { Updater.install(ctx, file) }
+                .onFailure { ui = UpdateUi.Failed("Could not open the installer.") }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { job?.cancel(); onClose() },
+        title = { Text("App update") },
+        text = {
+            when (val s = ui) {
+                is UpdateUi.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Checking for update\u2026")
+                }
+                is UpdateUi.NoInternet -> Text("No internet connection")
+                is UpdateUi.UpToDate -> Text("You have the latest version (v${s.version}).")
+                is UpdateUi.Available -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Update is available", fontWeight = FontWeight.Medium)
+                    Text("New version v${s.info.version}  (you have v${versionName(ctx)})")
+                    if (s.info.size > 0) Text(
+                        "Size: " + "%.1f".format(s.info.size / 1048576.0) + " MB",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+                    )
+                    if (s.info.notes.isNotBlank()) Text(
+                        s.info.notes.take(300),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+                    )
+                }
+                is UpdateUi.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Downloading\u2026 ${s.pct}%")
+                    LinearProgressIndicator(progress = { s.pct / 100f }, modifier = Modifier.fillMaxWidth())
+                }
+                is UpdateUi.Ready -> Text("Downloaded. Tap Install to update.")
+                is UpdateUi.Failed -> Text(s.message)
+            }
+        },
+        confirmButton = {
+            when (val s = ui) {
+                is UpdateUi.Available -> TextButton({ startDownload(s.info) }) { Text("Update") }
+                is UpdateUi.Ready -> TextButton({ doInstall(s.file) }) { Text("Install") }
+                is UpdateUi.Checking, is UpdateUi.Downloading -> {}
+                else -> TextButton(onClose) { Text("OK") }
+            }
+        },
+        dismissButton = {
+            when (ui) {
+                is UpdateUi.Available, is UpdateUi.Ready -> TextButton(onClose) { Text("Close") }
+                is UpdateUi.Downloading -> TextButton({ job?.cancel(); onClose() }) { Text("Cancel") }
+                else -> {}
+            }
+        },
+    )
 }

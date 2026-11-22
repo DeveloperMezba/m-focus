@@ -21,8 +21,12 @@ class NotificationBlocker : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (shouldBlock(sbn)) cancelNotification(sbn.key)
-        if (isCallNotification(sbn)) GuardService.instance?.onCallNotification()
+        try {
+            if (shouldBlock(sbn)) cancelNotification(sbn.key)
+            if (isCallNotification(sbn)) GuardService.instance?.onCallNotification()
+        } catch (t: Throwable) {
+            Diag.logCrash(this, t)       // a notification must never be able to crash the app
+        }
     }
 
     private fun isCallNotification(sbn: StatusBarNotification): Boolean {
@@ -59,7 +63,18 @@ class NotificationBlocker : NotificationListenerService() {
     }
 
     /** Packages that post call notifications: the app that shows the in-call screen. */
-    fun callPackages(): Set<String> = runCatching {
+    private var callPkgsAt = 0L
+    private var callPkgsCache: Set<String> = emptySet()
+
+    fun callPackages(): Set<String> {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - callPkgsAt < 300) return callPkgsCache      // window events come in floods: don't hammer the system
+        callPkgsCache = computeCallPackages()
+        callPkgsAt = now
+        return callPkgsCache
+    }
+
+    private fun computeCallPackages(): Set<String> = runCatching {
         activeNotifications.orEmpty()
             .filter { sbn ->
                 val n = sbn.notification ?: return@filter false

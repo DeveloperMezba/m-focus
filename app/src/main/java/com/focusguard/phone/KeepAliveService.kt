@@ -31,7 +31,7 @@ class KeepAliveService : Service() {
         }
         if (!active) {
             Session.complete(this)       // session ended while nobody was watching: save the minutes
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             stopSelf()
             return START_NOT_STICKY
         }
