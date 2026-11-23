@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - automation/android-cicd-test-20261124
   pull_request:
     branches:
       - main
