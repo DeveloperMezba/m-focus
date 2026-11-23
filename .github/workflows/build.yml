@@ -1,30 +1,96 @@
-name: Build APK
+name: Android Debug Build
+
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  debug:
+    name: Build Debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: '17'
+
+      # The repository has gradle-wrapper.properties but is missing the
+      # gradlew launchers and gradle-wrapper.jar, so install Gradle 8.7 directly.
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.7"
-      - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/mfocus.jks"
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+          gradle-version: '8.7'
+
+      # Optional for Debug: use the persistent release key when all secrets exist,
+      # so CI Debug APKs remain update-compatible with Release APKs.
+      - name: Prepare shared signing key (optional for Debug)
+        shell: bash
         env:
-          KEYSTORE_FILE: ${{ runner.temp }}/mfocus.jks
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-      - uses: actions/upload-artifact@v4
+        run: |
+          set -euo pipefail
+
+          values=("$KEYSTORE_BASE64" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD")
+          configured=0
+          for value in "${values[@]}"; do
+            if [[ -n "$value" ]]; then
+              configured=$((configured + 1))
+            fi
+          done
+
+          if [[ "$configured" -eq 0 ]]; then
+            echo "No signing secrets configured; using Android's standard Debug key."
+            exit 0
+          fi
+
+          if [[ "$configured" -ne 4 ]]; then
+            echo "Signing secrets are incomplete. Configure all four KEYSTORE_* secrets." >&2
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/mfocus-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          test -s "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          echo "KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
+
+      - name: Build Debug APK
+        run: gradle clean assembleDebug --stacktrace
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/mfocus-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v7
         with:
-          name: m-focus-apk
+          name: m-focus-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

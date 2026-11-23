@@ -1,0 +1,209 @@
+name: Android Stable Release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and attach signed APK
+    if: ${{ github.event.release.draft == false && github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the exact Release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # There is no complete Gradle Wrapper in this repository yet.
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.7'
+
+      - name: Validate release tag and calculate Android version
+        id: version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Accepted stable tags: v2.9 or v2.9.1. No beta/alpha suffixes.
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            echo "Use a stable tag such as v2.9.0 or v2.9." >&2
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[4]:-0}"
+
+          # Deterministic, monotonically increasing versionCode mapping:
+          # major * 1,000,000 + minor * 1,000 + patch.
+          if (( MAJOR > 2099 || MINOR > 999 || PATCH > 999 )); then
+            echo "Version component is outside the supported versionCode range." >&2
+            exit 1
+          fi
+
+          VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
+          if (( VERSION_CODE <= 8 || VERSION_CODE > 2100000000 )); then
+            echo "Calculated versionCode $VERSION_CODE is not valid for this app." >&2
+            exit 1
+          fi
+
+          VERSION_NAME="${RELEASE_TAG#v}"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $RELEASE_TAG"
+          echo "Android versionName: $VERSION_NAME"
+          echo "Android versionCode: $VERSION_CODE"
+
+      - name: Check Release mutability and versionCode order
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          CURRENT_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          immutable="$(jq -r '.immutable // false' <<< "$release_json")"
+          if [[ "$immutable" == "true" ]]; then
+            echo "This repository has immutable Releases enabled. GitHub locks assets after publication, so this published Release cannot accept the APK." >&2
+            echo "Use draft-first asset upload or disable immutable Releases for this repository." >&2
+            exit 1
+          fi
+
+          version_code_for_tag() {
+            local tag="$1"
+            if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]; then
+              return 1
+            fi
+            local major="${BASH_REMATCH[1]}"
+            local minor="${BASH_REMATCH[2]}"
+            local patch="${BASH_REMATCH[4]:-0}"
+            if (( major > 2099 || minor > 999 || patch > 999 )); then
+              return 1
+            fi
+            echo $((major * 1000000 + minor * 1000 + patch))
+          }
+
+          previous_tags="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+          while IFS= read -r previous_tag; do
+            [[ -z "$previous_tag" || "$previous_tag" == "$RELEASE_TAG" ]] && continue
+            previous_code="$(version_code_for_tag "$previous_tag" || true)"
+            [[ -z "$previous_code" ]] && continue
+            if (( CURRENT_VERSION_CODE <= previous_code )); then
+              echo "Release $RELEASE_TAG would have versionCode $CURRENT_VERSION_CODE, which is not greater than existing stable Release $previous_tag ($previous_code)." >&2
+              echo "Choose a higher stable version tag." >&2
+              exit 1
+            fi
+          done <<< "$previous_tags"
+
+          echo "Release is mutable and its versionCode is newer than existing stable Releases."
+
+      - name: Decode and validate release keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required GitHub Actions secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          keystore="$RUNNER_TEMP/mfocus-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          test -s "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          echo "Release keystore decoded and validated."
+
+      - name: Build signed Release APK
+        run: gradle clean assembleRelease --stacktrace
+        env:
+          APP_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          KEYSTORE_FILE: ${{ runner.temp }}/mfocus-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Verify APK identity and signature
+        shell: bash
+        env:
+          EXPECTED_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          EXPECTED_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+
+          source_apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$source_apk"
+
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "$sdk_root" || ! -d "$sdk_root/build-tools" ]]; then
+            echo "Android SDK build-tools directory was not found." >&2
+            exit 1
+          fi
+
+          AAPT="$(find "$sdk_root/build-tools" -type f -name aapt 2>/dev/null | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$sdk_root/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -n 1)"
+          if [[ -z "$AAPT" || -z "$APKSIGNER" ]]; then
+            echo "aapt or apksigner was not found in Android SDK build-tools." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$source_apk" dist/m-focus.apk
+
+          BADGING="$("$AAPT" dump badging dist/m-focus.apk)"
+          EXPECTED_PACKAGE="package: name='com.focusguard.phone' versionCode='${EXPECTED_VERSION_CODE}' versionName='${EXPECTED_VERSION_NAME}'"
+          if ! grep -Fq "$EXPECTED_PACKAGE" <<< "$BADGING"; then
+            echo "APK package/version does not match this Release tag." >&2
+            echo "$BADGING" | grep '^package:' || true
+            exit 1
+          fi
+
+          "$APKSIGNER" verify --verbose dist/m-focus.apk
+          sha256sum dist/m-focus.apk > dist/m-focus.apk.sha256
+          echo "APK package, version and signature checks passed."
+
+      - name: Attach APK to this GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            dist/m-focus.apk
+            dist/m-focus.apk.sha256
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          # Preserve the latest-release selection made by GitHub when the Release was published.
+          # Do not force this tag to latest after a long-running build; an older build could finish last.
