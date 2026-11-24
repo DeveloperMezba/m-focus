@@ -10,6 +10,15 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      app_version_code:
+        description: 'APP_VERSION_CODE for this build (must be higher than the last published versionCode)'
+        required: false
+        type: string
+      app_version_name:
+        description: 'APP_VERSION_NAME for this build (must match the GitHub Release tag, e.g. 2.9)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -81,6 +90,8 @@ jobs:
       - name: Build Debug APK
         run: gradle clean assembleDebug --stacktrace
         env:
+          APP_VERSION_CODE: ${{ inputs.app_version_code }}
+          APP_VERSION_NAME: ${{ inputs.app_version_name }}
           KEYSTORE_FILE: ${{ runner.temp }}/mfocus-release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}

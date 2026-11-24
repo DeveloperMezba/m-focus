@@ -490,9 +490,7 @@ fun AppPicker(onClose: () -> Unit) {
             val intent = pm.getLaunchIntentForPackage(pkg) ?: return@forEach
             val appInfo = runCatching { pm.getApplicationInfo(pkg, 0) }.getOrNull()
                 ?: return@forEach
-            if (intent != null) {
-                launchable.putIfAbsent(pkg, pm.getApplicationLabel(appInfo).toString())
-            }
+            launchable.putIfAbsent(pkg, pm.getApplicationLabel(appInfo).toString())
         }
 
         // Keep social apps blocked and exclude browsers other than Chrome.
@@ -516,7 +514,8 @@ fun AppPicker(onClose: () -> Unit) {
                     fontSize = 12.sp,
                 )
                 Text(
-                    "Chrome can open websites, including social sites. Add it only when you need browser access.",
+                    "Chrome can open websites, including social sites. Add it only when you need browser access. " +
+                        "Selecting the Google app also allows Google Search and anything reachable through it.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
                 )

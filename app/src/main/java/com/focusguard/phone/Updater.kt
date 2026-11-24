@@ -49,7 +49,7 @@ object Updater {
     private const val MAX_APK_BYTES = 150L * 1024L * 1024L
     private val versionPattern =
         Regex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?$")
-    private val sha256Pattern = Regex("^[0-9a-fA-F]{64}$")
+    internal val sha256Pattern = Regex("^[0-9a-fA-F]{64}$")
 
     fun online(c: Context): Boolean = try {
         val cm = c.getSystemService(ConnectivityManager::class.java)
@@ -142,10 +142,21 @@ object Updater {
             else -> return UpdateResult.Failed("GitHub returned an unsupported APK checksum format.")
         }
 
+        val notes = release.optString("body").trim()
+
+        // A release may declare its versionCode in the notes ("versionCode: 9"). If it does and the
+        // declared code is not higher than the installed one, do not offer or download the APK:
+        // versionCode, not versionName, decides whether Android can install it in place.
+        val declaredCode = releaseNotesVersionCode(notes)
+        val installedCode = installedLongVersionCode(c)
+        if (declaredCode != null && installedCode != null && declaredCode <= installedCode) {
+            return UpdateResult.UpToDate(current)
+        }
+
         return UpdateResult.Available(
             UpdateInfo(
                 version = version,
-                notes = release.optString("body").trim(),
+                notes = notes,
                 url = url,
                 size = asset.optLong("size", 0L).coerceAtLeast(0L),
                 sha256 = digest,
@@ -164,14 +175,14 @@ object Updater {
         return false
     }
 
-    private fun normalizeVersion(value: String): String? {
+    internal fun normalizeVersion(value: String): String? {
         val normalized = value.trim().removePrefix("v").removePrefix("V")
         return normalized.takeIf { versionPattern.matches(it) && versionParts(it) != null }
     }
 
-    private fun isSupportedVersion(value: String): Boolean = versionParts(value) != null
+    internal fun isSupportedVersion(value: String): Boolean = versionParts(value) != null
 
-    private fun versionParts(value: String): List<Long>? {
+    internal fun versionParts(value: String): List<Long>? {
         val normalized = value.trim().removePrefix("v").removePrefix("V")
         if (!versionPattern.matches(normalized)) return null
         return normalized.split('.').map { it.toLongOrNull() ?: return null }
@@ -378,6 +389,16 @@ object Updater {
     @Suppress("DEPRECATION")
     private fun longVersionCode(info: PackageInfo): Long =
         if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+
+    fun installedLongVersionCode(c: Context): Long? = runCatching {
+        val info = packageInfo(c.packageManager, c.packageName, 0) ?: return@runCatching null
+        longVersionCode(info)
+    }.getOrNull()
+
+    /** Reads an optional "versionCode: 9" declaration from the release notes. */
+    internal fun releaseNotesVersionCode(notes: String): Long? =
+        Regex("(?im)^\\s*versionCode\\s*[:=]\\s*([0-9]+)\\s*$")
+            .find(notes)?.groupValues?.get(1)?.toLongOrNull()
 
     private fun toHex(bytes: ByteArray): String {
         val alphabet = "0123456789abcdef"

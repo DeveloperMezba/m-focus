@@ -1,4 +1,6 @@
 import org.gradle.api.GradleException
+import java.io.File
+import java.security.KeyStore
 
 plugins {
     id("com.android.application")
@@ -24,11 +26,35 @@ val signingKeyAlias = providers.environmentVariable("KEY_ALIAS").orNull
 val signingKeyPassword = providers.environmentVariable("KEY_PASSWORD").orNull
 val keystoreFile = keystorePath?.takeIf { it.isNotBlank() }?.let { file(it) }
 
-val hasSharedSigning =
-    !keystorePassword.isNullOrBlank() &&
-        !signingKeyAlias.isNullOrBlank() &&
-        !signingKeyPassword.isNullOrBlank() &&
-        keystoreFile?.isFile == true
+val signingMaterialsPresent =
+    !keystorePassword.isNullOrBlank() && !signingKeyAlias.isNullOrBlank() && !signingKeyPassword.isNullOrBlank()
+
+/** The keystore must really open with the given password and alias; a corrupt key is an error, not a fallback. */
+fun keystoreOpens(file: File, password: String, alias: String): Boolean = runCatching {
+    for (type in listOf("PKCS12", "JKS")) {
+        val store = KeyStore.getInstance(type)
+        file.inputStream().use { store.load(it, password.toCharArray()) }
+        if (store.containsAlias(alias)) return@runCatching true
+    }
+    false
+}.getOrDefault(false)
+
+val keystoreUsable =
+    keystoreFile?.isFile == true &&
+        keystorePassword != null &&
+        signingKeyAlias != null &&
+        keystoreOpens(keystoreFile, keystorePassword, signingKeyAlias)
+
+// Signing secrets exist but the keystore cannot be opened: fail loudly instead of silently
+// producing a Debug-key APK that can never update the installed app.
+if (signingMaterialsPresent && !keystoreUsable) {
+    throw GradleException(
+        "KEYSTORE_FILE points to a keystore that cannot be opened with KEYSTORE_PASSWORD and KEY_ALIAS. " +
+            "Fix the signing secrets; the build will not fall back to the debug key."
+    )
+}
+
+val hasSharedSigning = signingMaterialsPresent && keystoreUsable
 
 val releaseVersionName = providers.environmentVariable("APP_VERSION_NAME").orNull
 val releaseVersionCode = providers.environmentVariable("APP_VERSION_CODE").orNull?.toIntOrNull()
@@ -55,7 +81,9 @@ android {
         minSdk = 27
         targetSdk = 34
 
-        versionCode = releaseVersionCode ?: 8
+        // Latest distributed build is v2.9 (versionCode 8). Any new distributed APK must carry a
+        // higher versionCode, otherwise the in-app updater rejects it ("not newer than installed").
+        versionCode = releaseVersionCode ?: 9
         versionName = releaseVersionName?.takeIf { it.isNotBlank() } ?: "2.9"
     }
 
@@ -103,4 +131,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.core:core-ktx:1.13.1")
+
+    testImplementation(kotlin("test"))
 }
