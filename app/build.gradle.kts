@@ -83,8 +83,8 @@ android {
 
         // Latest distributed build is v2.9 (versionCode 8). Any new distributed APK must carry a
         // higher versionCode, otherwise the in-app updater rejects it ("not newer than installed").
-        versionCode = releaseVersionCode ?: 9
-        versionName = releaseVersionName?.takeIf { it.isNotBlank() } ?: "2.9"
+        versionCode = releaseVersionCode ?: 10
+        versionName = releaseVersionName?.takeIf { it.isNotBlank() } ?: "2.9.1"
     }
 
     signingConfigs {
