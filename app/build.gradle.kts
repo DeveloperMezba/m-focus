@@ -56,7 +56,7 @@ android {
         targetSdk = 34
 
         versionCode = releaseVersionCode ?: 8
-        versionName = releaseVersionName?.takeIf { it.isNotBlank() } ?: "2.8"
+        versionName = releaseVersionName?.takeIf { it.isNotBlank() } ?: "2.9"
     }
 
     signingConfigs {
