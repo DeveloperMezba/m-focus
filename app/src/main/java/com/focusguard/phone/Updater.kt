@@ -2,6 +2,7 @@ package com.focusguard.phone
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -17,8 +18,15 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
+import java.security.MessageDigest
 
-data class UpdateInfo(val version: String, val notes: String, val url: String, val size: Long)
+data class UpdateInfo(
+    val version: String,
+    val notes: String,
+    val url: String,
+    val size: Long,
+    val sha256: String? = null,
+)
 
 sealed class UpdateResult {
     object NoInternet : UpdateResult()
@@ -30,172 +38,382 @@ sealed class UpdateResult {
 class UpdateException(message: String) : Exception(message)
 
 /**
- * Update from the app's GitHub releases. Nothing happens in the background: the app only goes
- * online when the user taps "App update" in Settings.
+ * Checks the latest stable GitHub Release only when the user opens App Update in Settings.
+ * Downloads one exact APK asset and verifies digest, package, versionCode and signing identity.
+ * All network methods are blocking and must be called from a background thread.
  */
 object Updater {
     const val REPO = "DeveloperMezba/m-focus"
+    private const val APK_ASSET_NAME = "m-focus.apk"
+    private const val RELEASE_API = "https://api.github.com/repos/$REPO/releases/latest"
+    private const val MAX_APK_BYTES = 150L * 1024L * 1024L
+    private val versionPattern =
+        Regex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?$")
+    internal val sha256Pattern = Regex("^[0-9a-fA-F]{64}$")
 
-    fun online(c: Context): Boolean {
-        return try {
-            val cm = c.getSystemService(ConnectivityManager::class.java)
-            val net = cm?.activeNetwork
-            val caps = if (cm != null && net != null) cm.getNetworkCapabilities(net) else null
-            caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        } catch (e: Exception) {
-            false
-        }
+    fun online(c: Context): Boolean = try {
+        val cm = c.getSystemService(ConnectivityManager::class.java)
+        val network = cm?.activeNetwork
+        val capabilities = if (cm != null && network != null) cm.getNetworkCapabilities(network) else null
+        capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    } catch (_: Exception) {
+        false
     }
 
-    /** Blocking. Call from a background thread. */
     fun check(c: Context): UpdateResult {
         if (!online(c)) return UpdateResult.NoInternet
-        var conn: HttpURLConnection? = null
+        var connection: HttpURLConnection? = null
         return try {
-            val http = URL("https://api.github.com/repos/$REPO/releases/latest").openConnection() as HttpURLConnection
-            conn = http
-            http.connectTimeout = 8000
-            http.readTimeout = 8000
+            val http = URL(RELEASE_API).openConnection() as HttpURLConnection
+            connection = http
+            http.connectTimeout = 8_000
+            http.readTimeout = 8_000
+            http.instanceFollowRedirects = true
             http.setRequestProperty("Accept", "application/vnd.github+json")
-            http.setRequestProperty("User-Agent", "M-Focus")
+            http.setRequestProperty("User-Agent", "M-Focus-Android-Updater")
+
             when (val code = http.responseCode) {
-                200 -> parse(c, http.inputStream.bufferedReader().use { it.readText() })
-                404 -> UpdateResult.Failed("No update has been published yet.")
-                403, 429 -> UpdateResult.Failed("GitHub is busy. Try again in a few minutes.")
-                else -> UpdateResult.Failed("Could not check for updates (error $code).")
+                HttpURLConnection.HTTP_OK ->
+                    parse(c, http.inputStream.bufferedReader().use { it.readText() })
+                HttpURLConnection.HTTP_NOT_FOUND ->
+                    UpdateResult.Failed("No stable update has been published yet.")
+                403, 429 ->
+                    UpdateResult.Failed("GitHub is busy. Try again in a few minutes.")
+                else ->
+                    UpdateResult.Failed("Could not check for updates (error $code).")
             }
-        } catch (e: UnknownHostException) {
+        } catch (_: UnknownHostException) {
             UpdateResult.NoInternet
-        } catch (e: ConnectException) {
+        } catch (_: ConnectException) {
             UpdateResult.NoInternet
-        } catch (e: SocketTimeoutException) {
+        } catch (_: SocketTimeoutException) {
             UpdateResult.NoInternet
-        } catch (e: IOException) {
+        } catch (_: IOException) {
             UpdateResult.Failed("Could not reach GitHub. Check your connection.")
-        } catch (e: Exception) {
-            UpdateResult.Failed("Something went wrong while checking.")
+        } catch (_: Exception) {
+            UpdateResult.Failed("Something went wrong while checking for updates.")
         } finally {
-            runCatching { conn?.disconnect() }
+            runCatching { connection?.disconnect() }
         }
     }
 
     private fun parse(c: Context, body: String): UpdateResult {
-        val json = JSONObject(body)
-        val tag = json.optString("tag_name").trim().removePrefix("v").removePrefix("V")
-        var url = ""
-        var size = 0L
-        val assets = json.optJSONArray("assets")
+        val release = JSONObject(body)
+        if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) {
+            return UpdateResult.Failed("The latest GitHub Release is not a stable published release.")
+        }
+
+        val tag = release.optString("tag_name").trim()
+        val version = normalizeVersion(tag)
+            ?: return UpdateResult.Failed("The latest stable Release has an invalid version tag.")
+
+        val current = versionName(c).trim()
+        if (!isSupportedVersion(current)) {
+            return UpdateResult.Failed("The installed app version could not be read.")
+        }
+        if (!isNewer(version, current)) return UpdateResult.UpToDate(current)
+
+        val assets = release.optJSONArray("assets")
+        var apk: JSONObject? = null
         if (assets != null) {
             for (i in 0 until assets.length()) {
-                val a = assets.optJSONObject(i) ?: continue
-                if (a.optString("name").endsWith(".apk", ignoreCase = true)) {
-                    url = a.optString("browser_download_url")
-                    size = a.optLong("size")
+                val item = assets.optJSONObject(i) ?: continue
+                if (item.optString("name") == APK_ASSET_NAME) {
+                    apk = item
                     break
                 }
             }
         }
-        val current = versionName(c)
-        if (tag.isEmpty()) return UpdateResult.Failed("The latest release has no version number.")
-        if (!isNewer(tag, current)) return UpdateResult.UpToDate(current)
-        if (url.isEmpty()) return UpdateResult.Failed("The new version has no APK file yet.")
-        // only ever download from this project's own releases
-        if (!url.startsWith("https://github.com/$REPO/releases/download/")) {
-            return UpdateResult.Failed("The download address looks wrong, so it was not used.")
+
+        val asset = apk
+            ?: return UpdateResult.Failed("Version $version is being prepared. Please check again shortly.")
+
+        val url = asset.optString("browser_download_url").trim()
+        if (!isTrustedDownloadUrl(url, version)) {
+            return UpdateResult.Failed("The APK download address does not match the official M-Focus Release.")
         }
-        return UpdateResult.Available(UpdateInfo(tag, json.optString("body").trim(), url, size))
+
+        val rawDigest = asset.optString("digest").trim()
+        val digest = when {
+            rawDigest.isEmpty() -> null
+            rawDigest.startsWith("sha256:", ignoreCase = true) ->
+                rawDigest.substringAfter(':').takeIf { sha256Pattern.matches(it) }
+                    ?: return UpdateResult.Failed("GitHub returned an invalid APK checksum.")
+            else -> return UpdateResult.Failed("GitHub returned an unsupported APK checksum format.")
+        }
+
+        val notes = release.optString("body").trim()
+
+        // A release may declare its versionCode in the notes ("versionCode: 9"). If it does and the
+        // declared code is not higher than the installed one, do not offer or download the APK:
+        // versionCode, not versionName, decides whether Android can install it in place.
+        val declaredCode = releaseNotesVersionCode(notes)
+        val installedCode = installedLongVersionCode(c)
+        if (declaredCode != null && installedCode != null && declaredCode <= installedCode) {
+            return UpdateResult.UpToDate(current)
+        }
+
+        return UpdateResult.Available(
+            UpdateInfo(
+                version = version,
+                notes = notes,
+                url = url,
+                size = asset.optLong("size", 0L).coerceAtLeast(0L),
+                sha256 = digest,
+            )
+        )
     }
 
     fun isNewer(a: String, b: String): Boolean {
-        fun parts(v: String) = v.split('.', '-').map { it.takeWhile(Char::isDigit).toIntOrNull() ?: 0 }
-        val x = parts(a)
-        val y = parts(b)
-        for (i in 0 until maxOf(x.size, y.size)) {
-            val p = x.getOrElse(i) { 0 }
-            val q = y.getOrElse(i) { 0 }
-            if (p != q) return p > q
+        val newer = versionParts(a) ?: return false
+        val current = versionParts(b) ?: return false
+        for (index in 0 until maxOf(newer.size, current.size)) {
+            val left = newer.getOrElse(index) { 0L }
+            val right = current.getOrElse(index) { 0L }
+            if (left != right) return left > right
         }
         return false
     }
 
-    /** Blocking. Returns the downloaded APK, or throws UpdateException with a message for the user. */
-    fun download(c: Context, info: UpdateInfo, onProgress: (Int) -> Unit, cancelled: () -> Boolean): File {
+    internal fun normalizeVersion(value: String): String? {
+        val normalized = value.trim().removePrefix("v").removePrefix("V")
+        return normalized.takeIf { versionPattern.matches(it) && versionParts(it) != null }
+    }
+
+    internal fun isSupportedVersion(value: String): Boolean = versionParts(value) != null
+
+    internal fun versionParts(value: String): List<Long>? {
+        val normalized = value.trim().removePrefix("v").removePrefix("V")
+        if (!versionPattern.matches(normalized)) return null
+        return normalized.split('.').map { it.toLongOrNull() ?: return null }
+    }
+
+    /** Exact host, repository, tag and asset match; query strings and alternate ports are rejected. */
+    private fun isTrustedDownloadUrl(value: String, expectedVersion: String): Boolean {
+        val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return false
+        val path = uri.pathSegments
+        return uri.scheme.equals("https", ignoreCase = true) &&
+            uri.encodedAuthority.equals("github.com", ignoreCase = true) &&
+            uri.query == null && uri.fragment == null &&
+            path.size == 6 &&
+            path[0] == "DeveloperMezba" &&
+            path[1] == "m-focus" &&
+            path[2] == "releases" &&
+            path[3] == "download" &&
+            normalizeVersion(path[4]) == expectedVersion &&
+            path[5] == APK_ASSET_NAME
+    }
+
+    fun download(
+        c: Context,
+        info: UpdateInfo,
+        onProgress: (Int) -> Unit,
+        cancelled: () -> Boolean,
+    ): File {
+        if (!isTrustedDownloadUrl(info.url, info.version)) {
+            throw UpdateException("The APK download address does not match the selected M-Focus Release.")
+        }
+        if (info.sha256 != null && !sha256Pattern.matches(info.sha256)) {
+            throw UpdateException("The APK checksum is invalid.")
+        }
+        if (info.size > MAX_APK_BYTES) {
+            throw UpdateException("The update file is unexpectedly large and was rejected.")
+        }
+
         val dir = File(c.cacheDir, "updates")
-        dir.mkdirs()
-        dir.listFiles()?.forEach { it.delete() }
-        val out = File(dir, "m-focus-${info.version}.apk")
-        var conn: HttpURLConnection? = null
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw UpdateException("Could not prepare storage for the update.")
+        }
+        dir.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
+
+        val outputFile = File(dir, "m-focus-update.apk")
+        var connection: HttpURLConnection? = null
         try {
             val http = URL(info.url).openConnection() as HttpURLConnection
-            conn = http
+            connection = http
             http.connectTimeout = 10_000
-            http.readTimeout = 15_000
-            http.setRequestProperty("User-Agent", "M-Focus")
+            http.readTimeout = 20_000
+            http.instanceFollowRedirects = true
+            http.setRequestProperty("User-Agent", "M-Focus-Android-Updater")
             http.connect()
-            if (http.responseCode !in 200..299) throw UpdateException("Download failed (error ${http.responseCode}).")
-            val total = http.contentLengthLong.takeIf { it > 0 } ?: info.size
+
+            if (http.responseCode !in 200..299) {
+                throw UpdateException("Download failed (error ${http.responseCode}).")
+            }
+
+            val total = http.contentLengthLong.takeIf { it > 0L }
+                ?: info.size.takeIf { it > 0L }
+                ?: -1L
+            if (total > MAX_APK_BYTES) {
+                throw UpdateException("The update file is unexpectedly large and was rejected.")
+            }
+
+            val digest = MessageDigest.getInstance("SHA-256")
             http.inputStream.use { input ->
-                out.outputStream().use { o ->
-                    val buf = ByteArray(32 * 1024)
-                    var done = 0L
-                    var lastPct = -1
+                outputFile.outputStream().use { output ->
+                    val buffer = ByteArray(32 * 1024)
+                    var downloaded = 0L
+                    var lastPercent = -1
                     while (true) {
-                        if (cancelled()) { out.delete(); throw UpdateException("Cancelled.") }
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        o.write(buf, 0, n)
-                        done += n
-                        if (total > 0) {
-                            val pct = ((done * 100) / total).toInt().coerceIn(0, 100)
-                            if (pct != lastPct) { lastPct = pct; onProgress(pct) }
+                        if (cancelled()) throw UpdateException("Download cancelled.")
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        downloaded += count
+                        if (downloaded > MAX_APK_BYTES) {
+                            throw UpdateException("The update file is unexpectedly large and was rejected.")
+                        }
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+
+                        if (total > 0L) {
+                            val percent = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                onProgress(percent)
+                            }
                         }
                     }
                 }
             }
-            if (total > 0 && out.length() != total) throw UpdateException("The download was cut off. Please try again.")
+
+            if (total > 0L && outputFile.length() != total) {
+                throw UpdateException("The download was incomplete. Please try again.")
+            }
+
+            val actualDigest = toHex(digest.digest())
+            if (info.sha256 != null && !actualDigest.equals(info.sha256, ignoreCase = true)) {
+                throw UpdateException("The downloaded APK checksum does not match GitHub. The file was rejected.")
+            }
+            onProgress(100)
         } catch (e: UpdateException) {
-            out.delete()
+            outputFile.delete()
             throw e
-        } catch (e: Exception) {
-            out.delete()
-            throw UpdateException(if (online(c)) "Download failed. Please try again." else "No internet connection")
+        } catch (_: UnknownHostException) {
+            outputFile.delete()
+            throw UpdateException("No internet connection.")
+        } catch (_: SocketTimeoutException) {
+            outputFile.delete()
+            throw UpdateException("The download timed out. Please try again.")
+        } catch (_: Exception) {
+            outputFile.delete()
+            throw UpdateException(if (online(c)) "Download failed. Please try again." else "No internet connection.")
         } finally {
-            runCatching { conn?.disconnect() }
+            runCatching { connection?.disconnect() }
         }
-        checkApk(c, out)
-        return out
+
+        try {
+            checkApk(c, outputFile, info.version)
+        } catch (e: UpdateException) {
+            outputFile.delete()
+            throw e
+        }
+        return outputFile
     }
 
-    /** The file must really be this app, and signed by the same key, or Android would refuse to update. */
     @Suppress("DEPRECATION")
-    private fun checkApk(c: Context, apk: File) {
-        val pm = c.packageManager
-        val archive = pm.getPackageArchiveInfo(apk.path, 0)
-        if (archive == null || archive.packageName != c.packageName) {
-            apk.delete()
-            throw UpdateException("The downloaded file is not a valid M Focus update.")
-        }
-        if (Build.VERSION.SDK_INT >= 28) {
-            val same = runCatching {
-                val flag = PackageManager.GET_SIGNING_CERTIFICATES
-                val mine = pm.getPackageInfo(c.packageName, flag).signingInfo?.apkContentsSigners
-                val theirs = pm.getPackageArchiveInfo(apk.path, flag)?.signingInfo?.apkContentsSigners
-                if (mine == null || theirs == null) true
-                else mine.map { it.toCharsString() }.toSet() == theirs.map { it.toCharsString() }.toSet()
-            }.getOrDefault(true)
-            if (!same) {
-                apk.delete()
+    private fun checkApk(c: Context, apk: File, expectedVersion: String) {
+        try {
+            val pm = c.packageManager
+            // Some Android 13 / API 33 PackageManager implementations can return an
+            // archive PackageInfo without SigningInfo unless legacy GET_SIGNATURES is also set.
+            // Ask for both on API 28+; keep the legacy flag on API 27.
+            val signingFlags = if (Build.VERSION.SDK_INT >= 28) {
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+            } else {
+                PackageManager.GET_SIGNATURES
+            }
+            val installed = packageInfo(pm, c.packageName, signingFlags)
+                ?: throw UpdateException("Could not verify the installed M-Focus app.")
+            val downloaded = archiveInfo(pm, apk.absolutePath, signingFlags)
+                ?: throw UpdateException("The downloaded file is not a valid Android APK.")
+
+            if (downloaded.packageName != c.packageName) {
+                throw UpdateException("The downloaded APK is not the M-Focus app.")
+            }
+            if (normalizeVersion(downloaded.versionName.orEmpty()) != expectedVersion) {
+                throw UpdateException("The APK version does not match the GitHub Release tag.")
+            }
+            if (longVersionCode(downloaded) <= longVersionCode(installed)) {
+                throw UpdateException("This APK is not newer than the installed version and was rejected.")
+            }
+
+            val installedSigners = signerDigests(installed)
+            val downloadedSigners = signerDigests(downloaded)
+            if (installedSigners.isEmpty() || downloadedSigners.isEmpty()) {
+                throw UpdateException("Could not verify the APK signing certificate. The update was rejected.")
+            }
+            if (installedSigners != downloadedSigners) {
                 throw UpdateException(
-                    "This update is signed with a different key, so it cannot replace the installed app. " +
-                        "Uninstall M Focus once and install the new APK by hand."
+                    "This update is signed with a different key, so it cannot safely replace the installed app. " +
+                        "The APK was rejected."
                 )
+            }
+        } catch (e: UpdateException) {
+            throw e
+        } catch (_: Exception) {
+            throw UpdateException("Could not securely verify the downloaded APK. The update was rejected.")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun packageInfo(pm: PackageManager, name: String, flags: Int): PackageInfo? =
+        if (Build.VERSION.SDK_INT >= 33) {
+            pm.getPackageInfo(name, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            pm.getPackageInfo(name, flags)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun archiveInfo(pm: PackageManager, path: String, flags: Int): PackageInfo? =
+        if (Build.VERSION.SDK_INT >= 33) {
+            pm.getPackageArchiveInfo(path, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            pm.getPackageArchiveInfo(path, flags)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun signerDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= 28) {
+            // Prefer SigningInfo. Fall back to legacy signatures if the platform omits SigningInfo.
+            info.signingInfo?.apkContentsSigners?.takeIf { it.isNotEmpty() }
+                ?: info.signatures?.takeIf { it.isNotEmpty() }
+        } else {
+            info.signatures
+        } ?: return emptySet()
+
+        return signatures.map {
+            toHex(MessageDigest.getInstance("SHA-256").digest(it.toByteArray()))
+        }.toSet()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun longVersionCode(info: PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+
+    fun installedLongVersionCode(c: Context): Long? = runCatching {
+        val info = packageInfo(c.packageManager, c.packageName, 0) ?: return@runCatching null
+        longVersionCode(info)
+    }.getOrNull()
+
+    /** Reads an optional "versionCode: 9" declaration from the release notes. */
+    internal fun releaseNotesVersionCode(notes: String): Long? =
+        Regex("(?im)^\\s*versionCode\\s*[:=]\\s*([0-9]+)\\s*$")
+            .find(notes)?.groupValues?.get(1)?.toLongOrNull()
+
+    private fun toHex(bytes: ByteArray): String {
+        val alphabet = "0123456789abcdef"
+        return buildString(bytes.size * 2) {
+            bytes.forEach { byte ->
+                val value = byte.toInt() and 0xff
+                append(alphabet[value ushr 4])
+                append(alphabet[value and 0x0f])
             }
         }
     }
 
-    fun canInstall(c: Context): Boolean = Build.VERSION.SDK_INT < 26 || c.packageManager.canRequestPackageInstalls()
+    fun canInstall(c: Context): Boolean =
+        Build.VERSION.SDK_INT < 26 || c.packageManager.canRequestPackageInstalls()
 
-    /** "Install unknown apps" switch for this app (needed once, Android asks for it). */
     fun openInstallPermission(c: Context) {
         c.startActivity(
             Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${c.packageName}"))

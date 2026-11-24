@@ -11,7 +11,7 @@ import android.view.inputmethod.InputMethodManager
 data class AppItem(val pkg: String, val label: String, val icon: Drawable?, val intent: Intent)
 
 object Apps {
-    /** AI apps that stay usable. Add more package names here if needed. */
+    /** AI apps users may explicitly choose as focus-session extras. */
     val AI_PRESETS = listOf(
         "com.google.android.apps.bard",   // Gemini
         "com.openai.chatgpt",             // ChatGPT
@@ -21,10 +21,21 @@ object Apps {
         "com.deepseek.chat",              // DeepSeek
     )
 
-    /** Apps that open their UI through another package: allowed only after tapping the app on the lock screen. */
-    /** AI apps are not allowed during a session and can't be chosen as extras. */
+    /** AI packages are recognized separately so they are never mistaken for an in-call screen. */
     val AI_ALL: Set<String> = AI_PRESETS.toSet() +
         setOf("com.google.android.googlequicksearchbox", "com.google.android.apps.googleassistant")
+
+    /** Chrome variants may be chosen explicitly; other browsers remain excluded from focus extras. */
+    val CHROME_PACKAGES: Set<String> = setOf(
+        "com.android.chrome",
+        "com.chrome.beta",
+        "com.chrome.dev",
+        "com.chrome.canary",
+    )
+
+    /** Explicit package visibility and fallback lookup for commonly requested extras. */
+    val EXTRA_APP_PACKAGE_HINTS: Set<String> = CHROME_PACKAGES +
+        setOf("com.google.android.apps.docs") + AI_ALL
 
     const val MAX_EXTRAS = 4
 
@@ -104,9 +115,12 @@ object Apps {
         return out
     }
 
-    /** Extras that are really allowed: social apps and browsers are always removed. */
+    /**
+     * Extras explicitly selected by the user. Social apps stay blocked; Chrome is selectable,
+     * while other browsers remain excluded because they can open social websites.
+     */
     fun effectiveExtras(c: Context): Set<String> =
-        (getExtras(c) - BLOCKED - AI_ALL - browserPackages(c)).take(MAX_EXTRAS).toSet()
+        (getExtras(c) - BLOCKED - (browserPackages(c) - CHROME_PACKAGES)).take(MAX_EXTRAS).toSet()
 
     /** Pre-installed packages. Used to stay away from system screens we don't recognise. */
     fun isSystemPackage(c: Context, pkg: String): Boolean = runCatching {
@@ -184,7 +198,8 @@ object Apps {
     fun allowedApps(c: Context): Set<String> {
         val now = SystemClock.uptimeMillis()
         cachedAllowed?.let { if (now - cachedAllowedAt < 60_000) return it }
-        val out = (CALL_PKGS + dialerPackages(c) + effectiveExtras(c)) - BLOCKED - AI_ALL
+        // AI apps and Chrome are usable only when the user explicitly selected them as extras.
+        val out = (CALL_PKGS + dialerPackages(c) + effectiveExtras(c)) - BLOCKED
         cachedAllowed = out
         cachedAllowedAt = now
         return out
