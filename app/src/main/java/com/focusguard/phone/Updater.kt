@@ -303,14 +303,17 @@ object Updater {
     private fun checkApk(c: Context, apk: File, expectedVersion: String) {
         try {
             val pm = c.packageManager
-            val flags = if (Build.VERSION.SDK_INT >= 28) {
-                PackageManager.GET_SIGNING_CERTIFICATES
+            // Some Android 13 / API 33 PackageManager implementations can return an
+            // archive PackageInfo without SigningInfo unless legacy GET_SIGNATURES is also set.
+            // Ask for both on API 28+; keep the legacy flag on API 27.
+            val signingFlags = if (Build.VERSION.SDK_INT >= 28) {
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
             } else {
                 PackageManager.GET_SIGNATURES
             }
-            val installed = packageInfo(pm, c.packageName, flags)
+            val installed = packageInfo(pm, c.packageName, signingFlags)
                 ?: throw UpdateException("Could not verify the installed M-Focus app.")
-            val downloaded = archiveInfo(pm, apk.absolutePath, flags)
+            val downloaded = archiveInfo(pm, apk.absolutePath, signingFlags)
                 ?: throw UpdateException("The downloaded file is not a valid Android APK.")
 
             if (downloaded.packageName != c.packageName) {
@@ -360,7 +363,9 @@ object Updater {
     @Suppress("DEPRECATION")
     private fun signerDigests(info: PackageInfo): Set<String> {
         val signatures = if (Build.VERSION.SDK_INT >= 28) {
-            info.signingInfo?.apkContentsSigners
+            // Prefer SigningInfo. Fall back to legacy signatures if the platform omits SigningInfo.
+            info.signingInfo?.apkContentsSigners?.takeIf { it.isNotEmpty() }
+                ?: info.signatures?.takeIf { it.isNotEmpty() }
         } else {
             info.signatures
         } ?: return emptySet()
