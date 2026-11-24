@@ -474,12 +474,34 @@ fun AppPicker(onClose: () -> Unit) {
     val ctx = LocalContext.current
     val apps = remember {
         val pm = ctx.packageManager
-        val browsers = Apps.browserPackages(ctx)
+        val launchable = linkedMapOf<String, String>()
+
+        // Discover installed apps with launcher icons.
         pm.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
-        ).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-            .filter { it.first != ctx.packageName && it.first !in Apps.BLOCKED && it.first !in Apps.AI_ALL && it.first !in browsers }
-            .distinctBy { it.first }
+        ).forEach { resolved ->
+            val pkg = resolved.activityInfo.packageName
+            launchable.putIfAbsent(pkg, resolved.loadLabel(pm).toString())
+        }
+
+        // Some OEM / Play-installed apps are not returned consistently by launcher queries.
+        // Explicit package visibility is also declared in AndroidManifest.xml.
+        Apps.EXTRA_APP_PACKAGE_HINTS.forEach { pkg ->
+            val intent = pm.getLaunchIntentForPackage(pkg) ?: return@forEach
+            val appInfo = runCatching { pm.getApplicationInfo(pkg, 0) }.getOrNull()
+                ?: return@forEach
+            if (intent != null) {
+                launchable.putIfAbsent(pkg, pm.getApplicationLabel(appInfo).toString())
+            }
+        }
+
+        // Keep social apps blocked and exclude browsers other than Chrome.
+        val blockedBrowsers = Apps.browserPackages(ctx) - Apps.CHROME_PACKAGES
+        launchable.entries
+            .filter { (pkg, _) ->
+                pkg != ctx.packageName && pkg !in Apps.BLOCKED && pkg !in blockedBrowsers
+            }
+            .map { it.key to it.value }
             .sortedBy { it.second.lowercase() }
     }
     var sel by remember { mutableStateOf(Apps.effectiveExtras(ctx)) }
@@ -487,17 +509,29 @@ fun AppPicker(onClose: () -> Unit) {
         onDismissRequest = onClose,
         title = { Text("Choose apps (${sel.size}/${Apps.MAX_EXTRAS})") },
         text = {
-            LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                items(apps) { (pkg, label) ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable { sel = if (pkg in sel) sel - pkg else if (sel.size < Apps.MAX_EXTRAS) sel + pkg else sel }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(pkg in sel, null)
-                        Spacer(Modifier.width(12.dp))
-                        Text(label)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Choose up to ${Apps.MAX_EXTRAS} apps to keep available during a focus session.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "Chrome can open websites, including social sites. Add it only when you need browser access.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                )
+                LazyColumn(Modifier.heightIn(max = 340.dp)) {
+                    items(apps) { (pkg, label) ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable { sel = if (pkg in sel) sel - pkg else if (sel.size < Apps.MAX_EXTRAS) sel + pkg else sel }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(pkg in sel, null)
+                            Spacer(Modifier.width(12.dp))
+                            Text(label)
+                        }
                     }
                 }
             }

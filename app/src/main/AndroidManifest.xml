@@ -14,6 +14,21 @@
 
     <!-- Needed on Android 11+ to see the dialer / launcher / browser packages we query. -->
     <queries>
+        <!-- Explicit visibility for common apps users may add as focus-session extras. -->
+        <package android:name="com.android.chrome" />
+        <package android:name="com.chrome.beta" />
+        <package android:name="com.chrome.dev" />
+        <package android:name="com.chrome.canary" />
+        <package android:name="com.google.android.apps.docs" />
+        <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.anthropic.claude" />
+        <package android:name="com.microsoft.copilot" />
+        <package android:name="ai.perplexity.app.android" />
+        <package android:name="com.deepseek.chat" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.apps.googleassistant" />
+
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
